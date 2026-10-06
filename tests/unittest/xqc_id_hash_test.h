@@ -7,4 +7,7 @@
 
 void xqc_test_id_hash();
 
+void xqc_test_pool_large_alignment();
+void xqc_test_murmur_high_bit_word();
+
 #endif
