@@ -1641,7 +1641,8 @@ xqc_process_data_blocked_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
         return ret;
     }
 
-    if (conn->conn_flow_ctl.fc_data_read + conn->conn_flow_ctl.fc_recv_windows_size <=
+    if ((conn->conn_flow_ctl.fc_data_read -
+         conn->conn_flow_ctl.fc_h3_body_pending) + conn->conn_flow_ctl.fc_recv_windows_size <=
         data_limit) {
         xqc_log(conn->log, XQC_LOG_INFO,
                 "|cannot increase data_limit "
@@ -1652,7 +1653,8 @@ xqc_process_data_blocked_frame(xqc_connection_t *conn, xqc_packet_in_t *packet_i
     }
 
     new_limit =
-        conn->conn_flow_ctl.fc_data_read + conn->conn_flow_ctl.fc_recv_windows_size;
+        (conn->conn_flow_ctl.fc_data_read -
+         conn->conn_flow_ctl.fc_h3_body_pending) + conn->conn_flow_ctl.fc_recv_windows_size;
 
     if (new_limit > conn->conn_flow_ctl.fc_max_data_can_recv) {
         conn->conn_flow_ctl.fc_max_data_can_recv = new_limit;
@@ -1706,7 +1708,7 @@ xqc_process_stream_data_blocked_frame(xqc_connection_t *conn, xqc_packet_in_t *p
         }
     }
 
-    if (stream->stream_data_in.next_read_offset +
+    if ((stream->stream_data_in.next_read_offset - stream->fc_h3_body_pending) +
             stream->stream_flow_ctl.fc_stream_recv_window_size <=
         stream_data_limit) {
         xqc_log(conn->log, XQC_LOG_INFO,
@@ -1718,7 +1720,7 @@ xqc_process_stream_data_blocked_frame(xqc_connection_t *conn, xqc_packet_in_t *p
         return XQC_OK;
     }
 
-    new_limit = stream->stream_data_in.next_read_offset +
+    new_limit = (stream->stream_data_in.next_read_offset - stream->fc_h3_body_pending) +
                 stream->stream_flow_ctl.fc_stream_recv_window_size;
 
     if (new_limit > stream->stream_flow_ctl.fc_max_stream_data_can_recv) {

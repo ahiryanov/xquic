@@ -1190,7 +1190,9 @@ xqc_write_stream_frame_to_packet(xqc_connection_t *conn,
         && stream->stream_send_offset == 0
         && stream->stream_type == XQC_CLI_BID) 
     {
-        available_window = stream->stream_flow_ctl.fc_max_stream_data_can_recv - stream->stream_data_in.next_read_offset;
+        available_window = stream->stream_flow_ctl.fc_max_stream_data_can_recv
+                           - (stream->stream_data_in.next_read_offset
+                              - stream->fc_h3_body_pending);
         old_fc_win = stream->stream_flow_ctl.fc_stream_recv_window_size;
 
         if (stream->recv_rate_bytes_per_sec) {
@@ -1212,6 +1214,12 @@ xqc_write_stream_frame_to_packet(xqc_connection_t *conn,
                     "|initial_fc_credit_update|stream:%ui|no_rate_limit|old_fc_win:%ui|fc_win:%ui|",
                     stream->stream_id,
                     old_fc_win, stream->stream_flow_ctl.fc_stream_recv_window_size);
+        }
+
+        if (conn->conn_settings.h3_body_recv_window) {
+            stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_min(
+                stream->stream_flow_ctl.fc_stream_recv_window_size,
+                conn->conn_settings.h3_body_recv_window);
         }
 
         if (stream->stream_flow_ctl.fc_stream_recv_window_size > available_window) {        

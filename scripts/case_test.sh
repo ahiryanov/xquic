@@ -5649,4 +5649,34 @@ fi
 
 killall test_server 2> /dev/null
 
+
+# HTTP/3 application-consumption credit, RFC 9000 Section 4.2.
+killall test_server 2>/dev/null
+clear_log
+rm -f test_session xqc_token tp_localhost h3_body_credit_server.log
+${SERVER_BIN} -l d -e -x 1070 > h3_body_credit_server.log &
+sleep 1
+${CLIENT_BIN} -s 1048576 -l d -t 5 -E -P 2 -n 2 -x 1070 > stdlog
+success_count=$(grep -c ">>>>>>>> pass:1" stdlog)
+if [ "$success_count" -eq 2 ]; then
+    case_print_result "h3_body_credit_normal_transfer" "pass"
+else
+    case_print_result "h3_body_credit_normal_transfer" "fail"
+fi
+killall test_server 2>/dev/null
+clear_log
+rm -f test_session xqc_token tp_localhost h3_body_credit_server.log
+${SERVER_BIN} -l d -e -x 1071 > h3_body_credit_server.log &
+sleep 1
+${CLIENT_BIN} -s 1048576 -l d -t 5 -E -P 2 -n 2 -x 1071 > stdlog
+success_count=$(grep -c ">>>>>>>> pass:1" stdlog)
+bounded=$(grep '\[h3-body-credit\].*|other:1|bounded:1|' h3_body_credit_server.log)
+if [ "$success_count" -eq 2 ] && [ -n "$bounded" ]; then
+    case_print_result "h3_body_credit_paused_consumer_resumes" "pass"
+else
+    case_print_result "h3_body_credit_paused_consumer_resumes" "fail"
+fi
+killall test_server 2>/dev/null
+rm -f h3_body_credit_server.log
+
 cd -

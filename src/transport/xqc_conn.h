@@ -261,6 +261,8 @@ typedef struct {
     uint64_t fc_max_data_can_recv;
     uint64_t fc_data_recved;
     uint64_t fc_data_read;
+    /* Transport-delivered H3 DATA still owned by the application queue. */
+    uint64_t fc_h3_body_pending;
 
     uint64_t fc_max_streams_bidi_can_send;
     uint64_t fc_max_streams_bidi_can_recv;

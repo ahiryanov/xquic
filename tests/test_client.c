@@ -5195,6 +5195,10 @@ int main(int argc, char *argv[]) {
         .recv_rate_bytes_per_sec = rate_limit,
         .close_dgram_redundancy = XQC_RED_NOT_USE
     };
+    if (g_test_case == 1070 || g_test_case == 1071) {
+        conn_settings.h3_body_recv_window = 65536;
+    }
+
 
     strncpy(conn_settings.conn_option_str, conn_options, XQC_CO_STR_MAX_LEN - 1);
     conn_settings.conn_option_str[XQC_CO_STR_MAX_LEN - 1] = '\0';

@@ -187,6 +187,8 @@ xqc_server_set_conn_settings(xqc_engine_t *engine, const xqc_conn_settings_t *se
     engine->default_conn_settings.sndq_packets_used_max = settings->sndq_packets_used_max;
     engine->default_conn_settings.max_stream_unsent_packets =
         settings->max_stream_unsent_packets;
+    engine->default_conn_settings.h3_body_recv_window =
+        settings->h3_body_recv_window;
     engine->default_conn_settings.max_stream_frame_buffered_cnt =
         settings->max_stream_frame_buffered_cnt;
     engine->default_conn_settings.linger = settings->linger;
@@ -699,6 +701,16 @@ xqc_conn_init_trans_settings(xqc_connection_t *conn)
         }
     }
 
+    if (conn->conn_settings.h3_body_recv_window) {
+        uint64_t window = conn->conn_settings.h3_body_recv_window;
+        ls->max_stream_data_bidi_local = xqc_min(
+            ls->max_stream_data_bidi_local, window);
+        ls->max_stream_data_bidi_remote = xqc_min(
+            ls->max_stream_data_bidi_remote, window);
+        ls->max_stream_data_uni = xqc_min(ls->max_stream_data_uni, window);
+        ls->max_data = xqc_min(ls->max_data, 2 * window);
+    }
+
     ls->max_idle_timeout = conn->conn_settings.idle_time_out;
 
     ls->max_udp_payload_size = conn->conn_settings.max_udp_payload_size;
@@ -866,6 +878,11 @@ xqc_conn_create(xqc_engine_t *engine, xqc_cid_t *dcid, xqc_cid_t *scid,
     }
 
     xc->conn_settings = *settings;
+    if (xc->conn_settings.h3_body_recv_window) {
+        xc->conn_settings.h3_body_recv_window = xqc_max(XQC_MIN_RECV_WINDOW,
+            xqc_min(XQC_MAX_RECV_WINDOW,
+                    xc->conn_settings.h3_body_recv_window));
+    }
 
     xqc_memcpy(xc->conn_settings.conn_option_str, settings->conn_option_str,
                XQC_CO_STR_MAX_LEN);

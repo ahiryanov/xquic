@@ -419,8 +419,12 @@ xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
     uint64_t old_fc_win = 0;
 
     /* stream level */
-    uint64_t available_window = stream->stream_flow_ctl.fc_max_stream_data_can_recv -
-                                stream->stream_data_in.next_read_offset;
+    /* A transport read moves DATA into H3, not necessarily to the final
+     * consumer. Keep its receive credit held while the body is queued. */
+    uint64_t consumed = stream->stream_data_in.next_read_offset
+                        - stream->fc_h3_body_pending;
+    uint64_t available_window =
+        stream->stream_flow_ctl.fc_max_stream_data_can_recv - consumed;
 
     if (available_window < stream->stream_flow_ctl.fc_stream_recv_window_size / 2) {
         if (!stream->recv_rate_bytes_per_sec) {
@@ -450,6 +454,11 @@ xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
                     stream->stream_flow_ctl.fc_stream_recv_window_size);
         }
 
+        if (conn->conn_settings.h3_body_recv_window) {
+            stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_min(
+                stream->stream_flow_ctl.fc_stream_recv_window_size,
+                conn->conn_settings.h3_body_recv_window);
+        }
         stream->stream_flow_ctl.fc_last_window_update_time = now;
 
         if (stream->stream_flow_ctl.fc_stream_recv_window_size > available_window) {
@@ -469,9 +478,21 @@ xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
         }
     }
 
-    /* connection level */
-    available_window =
-        conn->conn_flow_ctl.fc_max_data_can_recv - conn->conn_flow_ctl.fc_data_read;
+    return xqc_conn_do_recv_flow_ctl(conn,
+        stream->stream_flow_ctl.fc_stream_recv_window_size);
+}
+
+int
+xqc_conn_do_recv_flow_ctl(xqc_connection_t *conn, uint64_t stream_window)
+{
+    xqc_usec_t now = xqc_monotonic_timestamp();
+    xqc_usec_t min_srtt = xqc_conn_get_min_srtt(conn, 0);
+    xqc_usec_t max_srtt = 0;
+    uint64_t old_fc_win = 0;
+    uint64_t consumed = conn->conn_flow_ctl.fc_data_read
+                        - conn->conn_flow_ctl.fc_h3_body_pending;
+    uint64_t available_window =
+        conn->conn_flow_ctl.fc_max_data_can_recv - consumed;
 
     if (available_window < conn->conn_flow_ctl.fc_recv_windows_size / 2) {
         if (!conn->conn_settings.recv_rate_bytes_per_sec) {
@@ -482,9 +503,9 @@ xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
             }
 
             if (conn->conn_flow_ctl.fc_recv_windows_size <
-                1.5 * stream->stream_flow_ctl.fc_stream_recv_window_size) {
+                1.5 * stream_window) {
                 conn->conn_flow_ctl.fc_recv_windows_size =
-                    (uint64_t)(1.5 * stream->stream_flow_ctl.fc_stream_recv_window_size);
+                    (uint64_t)(1.5 * stream_window);
             }
 
         } else {
@@ -504,6 +525,11 @@ xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
                     conn->conn_flow_ctl.fc_recv_windows_size);
         }
 
+        if (conn->conn_settings.h3_body_recv_window) {
+            conn->conn_flow_ctl.fc_recv_windows_size = xqc_min(
+                conn->conn_flow_ctl.fc_recv_windows_size,
+                2ULL * conn->conn_settings.h3_body_recv_window);
+        }
         conn->conn_flow_ctl.fc_last_window_update_time = now;
 
         if (conn->conn_flow_ctl.fc_recv_windows_size > available_window) {
@@ -1143,8 +1169,14 @@ xqc_stream_update_settings(xqc_stream_t *stream, xqc_stream_settings_t *settings
                 XQC_MAX_RECV_WINDOW, stream->stream_flow_ctl.fc_stream_recv_window_size);
             xqc_log(conn->log, XQC_LOG_DEBUG, "|fc_win_update|old_fc_win:%ui|fc_win:%ui|",
                     old_fc_win, stream->stream_flow_ctl.fc_stream_recv_window_size);
-            new_offset = stream->stream_data_in.next_read_offset +
-                         stream->stream_flow_ctl.fc_stream_recv_window_size;
+            if (conn->conn_settings.h3_body_recv_window) {
+                stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_min(
+                    stream->stream_flow_ctl.fc_stream_recv_window_size,
+                    conn->conn_settings.h3_body_recv_window);
+            }
+            new_offset = stream->stream_data_in.next_read_offset
+                         - stream->fc_h3_body_pending
+                         + stream->stream_flow_ctl.fc_stream_recv_window_size;
 
             if (new_offset > stream->stream_flow_ctl.fc_max_stream_data_can_recv) {
                 stream->stream_flow_ctl.fc_max_stream_data_can_recv = new_offset;

@@ -1452,6 +1452,17 @@ typedef struct xqc_conn_settings_s {
      */
     uint32_t max_stream_unsent_packets;
     /**
+     * Opt-in HTTP/3 body consumption flow control. 0 keeps legacy credit
+     * accounting. Nonzero selects a per-stream receive window in bytes,
+     * clamped to [63000, 16 MiB], and an aggregate window of twice that.
+     * Unread DATA retains credit until recv_body or request destruction;
+     * headers and critical streams continue to credit transport reads.
+     * Initial transport parameters are bounded too, since previously
+     * advertised credit cannot be withdrawn (RFC 9000 Section 4.2).
+     * Coordinated rebuild required: xqc_conn_settings_t has no ABI size.
+     */
+    uint32_t h3_body_recv_window;
+    /**
      * Max buffered out-of-order STREAM frame nodes per stream (reassembly
      * cap, CWE-770 mitigation per RFC 9000 §21.7).
      *

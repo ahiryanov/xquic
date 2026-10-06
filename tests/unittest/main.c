@@ -201,6 +201,8 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_h3_control_frame_unexpected", xqc_test_h3_control_frame_unexpected)
         || !CU_add_test(pSuite, "xqc_test_h3_missing_settings", xqc_test_h3_missing_settings)
         || !CU_add_test(pSuite, "xqc_test_h3_request_frame_unexpected", xqc_test_h3_request_frame_unexpected)
+        || !CU_add_test(pSuite, "xqc_test_h3_body_consumption_credit", xqc_test_h3_body_consumption_credit)
+        || !CU_add_test(pSuite, "xqc_test_h3_body_cancel_releases_credit", xqc_test_h3_body_cancel_releases_credit)
         || !CU_add_test(pSuite,
                         "xqc_test_h3_server_reserved_request_frame_accepted",
                         xqc_test_h3_server_reserved_request_frame_accepted)
