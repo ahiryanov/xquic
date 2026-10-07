@@ -1219,7 +1219,11 @@ xqc_write_stream_frame_to_packet(xqc_connection_t *conn,
         if (conn->conn_settings.h3_body_recv_window) {
             stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_min(
                 stream->stream_flow_ctl.fc_stream_recv_window_size,
-                conn->conn_settings.h3_body_recv_window);
+                conn->conn_settings.h3_body_stream_initial_window
+                ? conn->conn_settings.h3_body_stream_initial_window
+                : (conn->conn_settings.h3_body_stream_recv_window
+                    ? conn->conn_settings.h3_body_stream_recv_window
+                    : conn->conn_settings.h3_body_recv_window));
         }
 
         if (stream->stream_flow_ctl.fc_stream_recv_window_size > available_window) {        

@@ -1744,6 +1744,29 @@ xqc_server_h3_body_resume(evutil_socket_t fd, short what, void *arg)
         pending > 0 && pending <= 65536 + 4096
         && aggregate <= 131072 + 4096, snapshot_ok);
     fflush(stdout);
+    user_stream_t *user = request->user_data;
+    uint64_t old_limit =
+        request->h3_stream->stream->stream_flow_ctl.fc_max_stream_data_can_recv;
+    size_t old_pending = request->body_buf_size;
+    if (g_echo && user->recv_body == NULL) {
+        user->recv_body = malloc(MAX_BUF_SIZE);
+    }
+    unsigned char fin = 0;
+    unsigned char partial[128];
+    ssize_t n = xqc_h3_request_recv_body(request, partial, sizeof(partial), &fin);
+    if (n > 0 && g_echo && user->recv_body != NULL) {
+        memcpy(user->recv_body + user->recv_body_len, partial, n);
+        user->recv_body_len += n;
+    }
+    uint64_t new_limit =
+        request->h3_stream->stream->stream_flow_ctl.fc_max_stream_data_can_recv;
+    printf("[h3-body-partial-credit]|read:%zd|consumed:%d|bounded:%d|\n", n,
+        n > 0 && request->body_buf_size + (size_t)n == old_pending,
+        new_limit >= old_limit && new_limit
+            <= request->h3_stream->stream->stream_data_in.next_read_offset
+               - request->h3_stream->stream->fc_h3_body_pending
+               + request->h3_stream->stream->stream_flow_ctl.fc_stream_recv_window_size);
+    fflush(stdout);
     g_h3_body_pause_finished = 1;
     event_free(g_h3_body_pause_event);
     g_h3_body_pause_event = NULL;
@@ -2988,6 +3011,7 @@ main(int argc, char *argv[])
     };
     if (g_test_case == 1070 || g_test_case == 1071) {
         conn_settings.h3_body_recv_window = 65536;
+        conn_settings.h3_body_stream_initial_window = 63000;
     }
 
 

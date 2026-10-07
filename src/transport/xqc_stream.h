@@ -73,6 +73,8 @@ typedef struct {
     uint64_t fc_max_stream_data_can_recv;
     uint64_t fc_stream_recv_window_size;
     xqc_usec_t fc_last_window_update_time;
+    xqc_usec_t fc_h3_sample_time;
+    uint64_t fc_h3_sample_consumed;
 } xqc_stream_flow_ctl_t;
 
 
@@ -283,8 +285,9 @@ void xqc_stream_update_flow_ctl(xqc_stream_t *stream);
 
 int xqc_stream_do_send_flow_ctl(xqc_stream_t *stream);
 
-int xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream);
-int xqc_conn_do_recv_flow_ctl(xqc_connection_t *conn, uint64_t stream_window);
+int xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream, xqc_bool_t body_consumed);
+int xqc_conn_do_recv_flow_ctl(xqc_connection_t *conn, uint64_t stream_window,
+    xqc_bool_t body_consumed);
 
 int xqc_stream_do_create_flow_ctl(xqc_connection_t *conn, xqc_stream_id_t stream_id,
                                   xqc_stream_type_t stream_type);

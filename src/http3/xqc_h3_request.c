@@ -195,10 +195,10 @@ xqc_h3_request_release_body_credit(xqc_h3_request_t *h3r, size_t len)
         && !(conn->conn_flag & XQC_CONN_FLAG_CLOSING_NOTIFY))
     {
         if (h3s->stream) {
-            xqc_stream_do_recv_flow_ctl(h3s->stream);
+            xqc_stream_do_recv_flow_ctl(h3s->stream, XQC_TRUE);
         } else {
             /* QPACK can keep an H3 request alive after transport close. */
-            xqc_conn_do_recv_flow_ctl(conn, 0);
+            xqc_conn_do_recv_flow_ctl(conn, 0, XQC_TRUE);
         }
         /* Queue MAX_DATA asynchronously; never reenter an application
          * callback from recv_body, including a timer-driven resume. */

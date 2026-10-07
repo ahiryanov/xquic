@@ -5197,6 +5197,7 @@ int main(int argc, char *argv[]) {
     };
     if (g_test_case == 1070 || g_test_case == 1071) {
         conn_settings.h3_body_recv_window = 65536;
+        conn_settings.h3_body_stream_initial_window = 63000;
     }
 
 

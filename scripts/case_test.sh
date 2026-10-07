@@ -5672,7 +5672,8 @@ sleep 1
 ${CLIENT_BIN} -s 1048576 -l d -t 5 -E -P 2 -n 2 -x 1071 > stdlog
 success_count=$(grep -c ">>>>>>>> pass:1" stdlog)
 bounded=$(grep '\[h3-body-credit\].*|other:1|bounded:1|snapshot:1|' h3_body_credit_server.log)
-if [ "$success_count" -eq 2 ] && [ -n "$bounded" ]; then
+partial=$(grep '\[h3-body-partial-credit\]|read:128|consumed:1|bounded:1|' h3_body_credit_server.log)
+if [ "$success_count" -eq 2 ] && [ -n "$bounded" ] && [ -n "$partial" ]; then
     case_print_result "h3_body_credit_paused_consumer_resumes" "pass"
 else
     case_print_result "h3_body_credit_paused_consumer_resumes" "fail"

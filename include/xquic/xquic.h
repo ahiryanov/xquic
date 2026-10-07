@@ -1462,6 +1462,14 @@ typedef struct xqc_conn_settings_s {
      * Coordinated rebuild required: xqc_conn_settings_t has no ABI size.
      */
     uint32_t h3_body_recv_window;
+    /** Optional smaller per-stream cap; 0 retains h3_body_recv_window.
+     * Aggregate credit stays at twice h3_body_recv_window. */
+    uint32_t h3_body_stream_recv_window;
+    /** Optional smaller initial stream window. 0 preserves the fixed-cap
+     * behavior above. Nonzero enables consumption/RTT autotuning up to the
+     * stream cap; unread DATA and BLOCKED frames never trigger growth.
+     * Clamped to [63000, stream cap]. Aggregate credit is unchanged. */
+    uint32_t h3_body_stream_initial_window;
     /**
      * Max buffered out-of-order STREAM frame nodes per stream (reassembly
      * cap, CWE-770 mitigation per RFC 9000 §21.7).
