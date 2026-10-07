@@ -5658,7 +5658,8 @@ ${SERVER_BIN} -l d -e -x 1070 > h3_body_credit_server.log &
 sleep 1
 ${CLIENT_BIN} -s 1048576 -l d -t 5 -E -P 2 -n 2 -x 1070 > stdlog
 success_count=$(grep -c ">>>>>>>> pass:1" stdlog)
-if [ "$success_count" -eq 2 ]; then
+diag_count=$(grep -c '\[h3-body-diag\]|request_empty:1|snapshot:1|' h3_body_credit_server.log)
+if [ "$success_count" -eq 2 ] && [ "$diag_count" -eq 2 ]; then
     case_print_result "h3_body_credit_normal_transfer" "pass"
 else
     case_print_result "h3_body_credit_normal_transfer" "fail"
@@ -5670,7 +5671,7 @@ ${SERVER_BIN} -l d -e -x 1071 > h3_body_credit_server.log &
 sleep 1
 ${CLIENT_BIN} -s 1048576 -l d -t 5 -E -P 2 -n 2 -x 1071 > stdlog
 success_count=$(grep -c ">>>>>>>> pass:1" stdlog)
-bounded=$(grep '\[h3-body-credit\].*|other:1|bounded:1|' h3_body_credit_server.log)
+bounded=$(grep '\[h3-body-credit\].*|other:1|bounded:1|snapshot:1|' h3_body_credit_server.log)
 if [ "$success_count" -eq 2 ] && [ -n "$bounded" ]; then
     case_print_result "h3_body_credit_paused_consumer_resumes" "pass"
 else

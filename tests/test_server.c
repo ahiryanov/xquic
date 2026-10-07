@@ -1732,10 +1732,17 @@ xqc_server_h3_body_resume(evutil_socket_t fd, short what, void *arg)
     xqc_connection_t *conn = request->h3_stream->h3c->conn;
     size_t pending = request->body_buf_size;
     uint64_t aggregate = conn->conn_flow_ctl.fc_h3_body_pending;
-    printf("[h3-body-credit]|paused:%zu|aggregate:%"PRIu64"|other:%d|bounded:%d|\n",
+    xqc_conn_stats_t diag = xqc_conn_get_stats(conn->engine,
+        &conn->scid_set.user_scid);
+    int snapshot_ok = diag.stream_diag_h3_pending == aggregate
+        && diag.stream_diag_recv_limit ==
+            conn->conn_flow_ctl.fc_max_data_can_recv;
+    free(diag.paths_info);
+    printf("[h3-body-credit]|paused:%zu|aggregate:%"PRIu64
+        "|other:%d|bounded:%d|snapshot:%d|\n",
         pending, aggregate, g_h3_body_other_completed,
         pending > 0 && pending <= 65536 + 4096
-        && aggregate <= 131072 + 4096);
+        && aggregate <= 131072 + 4096, snapshot_ok);
     fflush(stdout);
     g_h3_body_pause_finished = 1;
     event_free(g_h3_body_pause_event);
@@ -1907,6 +1914,19 @@ xqc_server_request_read_notify(xqc_h3_request_t *h3_request,
     }
 
     if (fin) {
+        if (g_test_case == 1070 || g_test_case == 1071) {
+            xqc_connection_t *conn = h3_request->h3_stream->h3c->conn;
+            xqc_conn_stats_t diag = xqc_conn_get_stats(conn->engine,
+                &conn->scid_set.user_scid);
+            printf("[h3-body-diag]|request_empty:%d|snapshot:%d|\n",
+                h3_request->body_buf_size == 0,
+                diag.stream_diag_h3_pending ==
+                    conn->conn_flow_ctl.fc_h3_body_pending
+                && diag.stream_diag_recv_read ==
+                    conn->conn_flow_ctl.fc_data_read);
+            free(diag.paths_info);
+            fflush(stdout);
+        }
         if (g_test_case == 1071 && !g_h3_body_pause_finished
             && g_h3_body_paused_request != h3_request)
         {

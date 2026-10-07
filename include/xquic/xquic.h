@@ -1941,6 +1941,19 @@ typedef struct xqc_conn_stats_s {
 
     uint32_t fec_recover_pkt_cnt;
     xqc_usec_t avg_close_time;
+
+    /* Connection flow-control snapshot. ABI grows: rebuild consumers
+     * with this pinned header/library pair. Offsets are cumulative;
+     * h3_pending is unread application DATA, not allocator usage. */
+    uint64_t stream_diag_recv_limit;
+    uint64_t stream_diag_recv_used;
+    uint64_t stream_diag_recv_read;
+    uint64_t stream_diag_h3_pending;
+    uint64_t stream_diag_recv_window;
+    uint64_t stream_diag_recv_window_update_us;
+    uint64_t stream_diag_send_limit;
+    uint64_t stream_diag_send_used;
+    uint64_t stream_diag_send_blocked;
 } xqc_conn_stats_t;
 
 typedef struct xqc_conn_qos_stats_s {

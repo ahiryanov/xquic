@@ -3931,6 +3931,25 @@ xqc_conn_get_stats_internal(xqc_connection_t *conn, xqc_conn_stats_t *conn_stats
         conn_stats->alpn[1] = '1';
     }
 
+    conn_stats->stream_diag_recv_limit =
+        conn->conn_flow_ctl.fc_max_data_can_recv;
+    conn_stats->stream_diag_recv_used =
+        conn->conn_flow_ctl.fc_data_recved;
+    conn_stats->stream_diag_recv_read =
+        conn->conn_flow_ctl.fc_data_read;
+    conn_stats->stream_diag_h3_pending =
+        conn->conn_flow_ctl.fc_h3_body_pending;
+    conn_stats->stream_diag_recv_window =
+        conn->conn_flow_ctl.fc_recv_windows_size;
+    conn_stats->stream_diag_recv_window_update_us =
+        conn->conn_flow_ctl.fc_last_window_update_time;
+    conn_stats->stream_diag_send_limit =
+        conn->conn_flow_ctl.fc_max_data_can_send;
+    conn_stats->stream_diag_send_used =
+        conn->conn_flow_ctl.fc_data_sent;
+    conn_stats->stream_diag_send_blocked =
+        !!(conn->conn_flag & XQC_CONN_FLAG_DATA_BLOCKED);
+
     conn_stats->conn_err = (int)conn->conn_err;
     conn_stats->early_data_flag = XQC_0RTT_NONE;
     conn_stats->enable_multipath = conn->enable_multipath;

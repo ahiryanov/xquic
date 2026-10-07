@@ -2225,6 +2225,14 @@ xqc_test_h3_body_consumption_credit()
     CU_ASSERT(h3s->h3r->body_buf_size == sizeof(data));
     CU_ASSERT(stream->fc_h3_body_pending == sizeof(data));
     CU_ASSERT(conn->conn_flow_ctl.fc_h3_body_pending == sizeof(data));
+    xqc_conn_stats_t diag = xqc_conn_get_stats(conn->engine,
+        &conn->scid_set.user_scid);
+    CU_ASSERT(diag.stream_diag_h3_pending == sizeof(data));
+    CU_ASSERT(diag.stream_diag_recv_limit == 131072);
+    CU_ASSERT(diag.stream_diag_recv_window == 131072);
+    free(diag.paths_info);
+    /* Observation is read-only: queued DATA and credit remain unchanged. */
+    CU_ASSERT(conn->conn_flow_ctl.fc_h3_body_pending == sizeof(data));
     /* Transport has read the DATA and 16 bytes of frame/header overhead. */
     stream->stream_data_in.next_read_offset = sizeof(data) + 16;
     conn->conn_flow_ctl.fc_data_read = sizeof(data) + 16;
@@ -2252,6 +2260,11 @@ xqc_test_h3_body_consumption_credit()
     CU_ASSERT(xqc_h3_request_recv_body(h3s->h3r, out, 32768, &fin) == 32768);
     CU_ASSERT(fin == 0);
     CU_ASSERT(h3s->h3r->body_buf_size == 32768);
+    diag = xqc_conn_get_stats(conn->engine,
+        &conn->scid_set.user_scid);
+    CU_ASSERT(diag.stream_diag_h3_pending == 32768);
+    CU_ASSERT(diag.stream_diag_recv_read == sizeof(data) + 16);
+    free(diag.paths_info);
     CU_ASSERT(stream->stream_flow_ctl.fc_max_stream_data_can_recv > 65536);
     h3s->h3r->fin_flag = 1;
     CU_ASSERT(xqc_h3_request_recv_body(h3s->h3r, out + 32768, 32768, &fin)
@@ -2294,6 +2307,11 @@ xqc_test_h3_body_cancel_releases_credit()
     CU_ASSERT(conn->conn_flow_ctl.fc_h3_body_pending == sizeof(data));
     xqc_h3_request_destroy(h3s->h3r);
     h3s->h3r = NULL;
+    xqc_conn_stats_t diag = xqc_conn_get_stats(conn->engine,
+        &conn->scid_set.user_scid);
+    CU_ASSERT(diag.stream_diag_h3_pending == 0);
+    CU_ASSERT(diag.stream_diag_recv_read == sizeof(data));
+    free(diag.paths_info);
     CU_ASSERT(stream->fc_h3_body_pending == 0);
     CU_ASSERT(conn->conn_flow_ctl.fc_h3_body_pending == 0);
     xqc_h3_msgerr_teardown(h3s, h3c, conn);
