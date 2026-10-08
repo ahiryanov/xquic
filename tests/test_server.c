@@ -1741,8 +1741,10 @@ xqc_server_h3_body_resume(evutil_socket_t fd, short what, void *arg)
     printf("[h3-body-credit]|paused:%zu|aggregate:%"PRIu64
         "|other:%d|bounded:%d|snapshot:%d|\n",
         pending, aggregate, g_h3_body_other_completed,
-        pending > 0 && pending <= 65536 + 4096
-        && aggregate <= 131072 + 4096, snapshot_ok);
+        pending > 0 && pending <=
+            (g_test_case == 1073 ? 262144 : 65536) + 4096
+        && aggregate <= (g_test_case == 1073 ? 268435456 : 131072) + 4096,
+        snapshot_ok);
     fflush(stdout);
     user_stream_t *user = request->user_data;
     uint64_t old_limit =
@@ -1859,7 +1861,8 @@ xqc_server_request_read_notify(xqc_h3_request_t *h3_request,
     }
 
     if (flag & XQC_REQ_NOTIFY_READ_BODY) {
-        if (g_test_case == 1071 && !g_h3_body_pause_finished) {
+        if ((g_test_case == 1071 || g_test_case == 1073)
+            && !g_h3_body_pause_finished) {
             if (!g_h3_body_pause_started) {
                 g_h3_body_pause_started = 1;
                 g_h3_body_paused_request = h3_request;
@@ -1937,7 +1940,9 @@ xqc_server_request_read_notify(xqc_h3_request_t *h3_request,
     }
 
     if (fin) {
-        if (g_test_case == 1070 || g_test_case == 1071) {
+        if (g_test_case == 1070 || g_test_case == 1071
+            || g_test_case == 1072 || g_test_case == 1073)
+        {
             xqc_connection_t *conn = h3_request->h3_stream->h3c->conn;
             xqc_conn_stats_t diag = xqc_conn_get_stats(conn->engine,
                 &conn->scid_set.user_scid);
@@ -1948,9 +1953,16 @@ xqc_server_request_read_notify(xqc_h3_request_t *h3_request,
                 && diag.stream_diag_recv_read ==
                     conn->conn_flow_ctl.fc_data_read);
             free(diag.paths_info);
+            if (g_test_case == 1072 || g_test_case == 1073) {
+                printf("[h3-large-window]|initial:%d|stream_cap:%d|aggregate:%d|\n",
+                    conn->local_settings.max_stream_data_bidi_remote == 262144,
+                    conn->conn_settings.h3_body_stream_recv_window == 16777216,
+                    conn->conn_flow_ctl.fc_recv_windows_size == 268435456);
+            }
             fflush(stdout);
         }
-        if (g_test_case == 1071 && !g_h3_body_pause_finished
+        if ((g_test_case == 1071 || g_test_case == 1073)
+            && !g_h3_body_pause_finished
             && g_h3_body_paused_request != h3_request)
         {
             g_h3_body_other_completed = 1;
@@ -3012,6 +3024,11 @@ main(int argc, char *argv[])
     if (g_test_case == 1070 || g_test_case == 1071) {
         conn_settings.h3_body_recv_window = 65536;
         conn_settings.h3_body_stream_initial_window = 63000;
+    }
+    if (g_test_case == 1072 || g_test_case == 1073) {
+        conn_settings.h3_body_recv_window = 128 * 1024 * 1024;
+        conn_settings.h3_body_stream_recv_window = 16 * 1024 * 1024;
+        conn_settings.h3_body_stream_initial_window = 256 * 1024;
     }
 
 

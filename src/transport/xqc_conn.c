@@ -890,14 +890,20 @@ xqc_conn_create(xqc_engine_t *engine, xqc_cid_t *dcid, xqc_cid_t *scid,
 
     xc->conn_settings = *settings;
     if (xc->conn_settings.h3_body_recv_window) {
+        /* RFC 9000 Sections 4.1/4.2: connection and stream credit are
+         * independent. A larger aggregate must not enlarge every stream. */
         xc->conn_settings.h3_body_recv_window = xqc_max(XQC_MIN_RECV_WINDOW,
-            xqc_min(XQC_MAX_RECV_WINDOW,
+            xqc_min(XQC_MAX_H3_BODY_RECV_WINDOW,
                     xc->conn_settings.h3_body_recv_window));
-        if (xc->conn_settings.h3_body_stream_recv_window) {
+        uint32_t stream_cap = xqc_min(XQC_MAX_RECV_WINDOW,
+            xc->conn_settings.h3_body_recv_window);
+        if (xc->conn_settings.h3_body_stream_recv_window
+            || xc->conn_settings.h3_body_recv_window > XQC_MAX_RECV_WINDOW)
+        {
+            uint32_t requested = xc->conn_settings.h3_body_stream_recv_window;
             xc->conn_settings.h3_body_stream_recv_window = xqc_max(
-                XQC_MIN_RECV_WINDOW, xqc_min(
-                    xc->conn_settings.h3_body_recv_window,
-                    xc->conn_settings.h3_body_stream_recv_window));
+                XQC_MIN_RECV_WINDOW,
+                xqc_min(stream_cap, requested ? requested : stream_cap));
         }
         if (xc->conn_settings.h3_body_stream_initial_window) {
             uint64_t cap = xc->conn_settings.h3_body_stream_recv_window

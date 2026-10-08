@@ -38,6 +38,8 @@
 #define XQC_MAX_PACKET_PROCESS_BATCH 100
 
 #define XQC_MAX_RECV_WINDOW (16 * 1024 * 1024)
+/* H3 aggregate credit is twice this base; stream caps remain independent. */
+#define XQC_MAX_H3_BODY_RECV_WINDOW (128 * 1024 * 1024)
 
 #define XQC_MP_SETTINGS_STR_LEN (30)
 
