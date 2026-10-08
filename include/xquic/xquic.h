@@ -1453,8 +1453,9 @@ typedef struct xqc_conn_settings_s {
     uint32_t max_stream_unsent_packets;
     /**
      * Opt-in HTTP/3 body consumption flow control. 0 keeps legacy credit
-     * accounting. Nonzero selects a per-stream receive window in bytes,
-     * clamped to [63000, 16 MiB], and an aggregate window of twice that.
+     * accounting. Nonzero selects a base budget in bytes, clamped to
+     * [63000, 128 MiB], and an aggregate window of twice that. Per-stream
+     * credit defaults to the smaller of this base and 16 MiB.
      * Unread DATA retains credit until recv_body or request destruction;
      * headers and critical streams continue to credit transport reads.
      * Initial transport parameters are bounded too, since previously
@@ -1462,8 +1463,8 @@ typedef struct xqc_conn_settings_s {
      * Coordinated rebuild required: xqc_conn_settings_t has no ABI size.
      */
     uint32_t h3_body_recv_window;
-    /** Optional smaller per-stream cap; 0 retains h3_body_recv_window.
-     * Aggregate credit stays at twice h3_body_recv_window. */
+    /** Optional smaller per-stream cap; 0 retains the default above.
+     * Always capped at 16 MiB. Aggregate credit stays at twice the base. */
     uint32_t h3_body_stream_recv_window;
     /** Optional smaller initial stream window. 0 preserves the fixed-cap
      * behavior above. Nonzero enables consumption/RTT autotuning up to the
