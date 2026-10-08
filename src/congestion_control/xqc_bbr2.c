@@ -78,7 +78,7 @@ static const int xqc_bbr2_windowed_max_rtt_win_size = 5;
 static const float xqc_bbr2_rtt_compensation_startup_thresh = 2;
 static const float xqc_bbr2_rtt_compensation_thresh = 1;
 static const float xqc_bbr2_rtt_compensation_cwnd_factor = 1;
-/* Probe bw for every 4-8 RTTs */
+/* Probe bw every 5-8 minimum RTTs. */
 static const int xqc_bbr2_fast_convergence_probe_round_base = 4;
 static const int xqc_bbr2_fast_convergence_probe_round_rand = 4;
 static const float xqc_bbr2_fast_convergence_rtt_factor = 1.25;
@@ -874,10 +874,15 @@ xqc_bbr2_pick_probe_wait(xqc_bbr2_t *bbr2)
 {
     bbr2->rounds_since_probe = xqc_random() % xqc_bbr2_bw_probe_rand_rounds;
 #if XQC_BBR2_PLUS_ENABLED
-    if (bbr2->fast_convergence_on) {
+    if (bbr2->fast_convergence_on && bbr2->min_rtt > 0
+        && bbr2->min_rtt < XQC_BBR2_INF_RTT)
+    {
         uint32_t rand_rtt_rounds = xqc_random() % 
                                    xqc_bbr2_fast_convergence_probe_round_rand;
         rand_rtt_rounds += (1 + xqc_bbr2_fast_convergence_probe_round_base);
+        /* Keep RTT-based adaptation without wrapping the microsecond field. */
+        bbr2->probe_wait_us = xqc_min(rand_rtt_rounds * bbr2->min_rtt,
+                                      (uint64_t)XQC_BBR2_UNSIGNED_INF);
     } else {
         bbr2->probe_wait_us = xqc_bbr2_bw_probe_base_us + 
                               (xqc_random() % xqc_bbr2_bw_probe_rand_us);
@@ -901,6 +906,12 @@ xqc_bbr2_enter_probe_down(xqc_bbr2_t *bbr2, xqc_sample_t *sampler)
     xqc_bbr2_reset_congestion_signals((void *)bbr2);
     bbr2->bw_probe_up_cnt = XQC_BBR2_UNSIGNED_INF;
     xqc_bbr2_pick_probe_wait(bbr2);
+    /* Idle restart may supply a synthetic sample without send_ctl. */
+    if (sampler->send_ctl != NULL) {
+        xqc_log(sampler->send_ctl->ctl_conn->log, XQC_LOG_DEBUG,
+                "|bbr2_probe_wait|wait_us:%ud|min_rtt:%ui|",
+                bbr2->probe_wait_us, bbr2->min_rtt);
+    }
     bbr2->cycle_start_stamp = sampler->now; /* start wall clock */
     bbr2->ack_phase = BBR2_ACKS_PROBE_STOPPING;
     bbr2->next_round_delivered = sampler->total_acked;
