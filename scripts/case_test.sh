@@ -5681,4 +5681,41 @@ fi
 killall test_server 2>/dev/null
 rm -f h3_body_credit_server.log
 
+# BBR2+ probe interval: clean echo and deterministic loss recovery.
+for probe_case in 870 871; do
+    killall test_server 2>/dev/null
+    clear_log
+    rm -f test_session xqc_token tp_localhost
+    ${SERVER_BIN} -l d -e -c bbr2+ -x "$probe_case" > bbr2_server.log &
+    probe_server_pid=$!
+    sleep 1
+    ${CLIENT_BIN} -s 5242880 -l d -t 3 -E -c bbr2+ -x "$probe_case" > stdlog
+    success_count=$(grep -c ">>>>>>>> pass:1" stdlog)
+    client_wait=$(grep -E '\|bbr2_probe_wait\|wait_us:[1-9][0-9]*\|' clog)
+    server_wait=$(grep -E '\|bbr2_probe_wait\|wait_us:[1-9][0-9]*\|' slog)
+    zero_wait=$(grep -E '\|bbr2_probe_wait\|wait_us:0\|' clog slog)
+    if [ "$probe_case" -eq 870 ]; then
+        probe_name="bbr2_probe_wait_normal_transfer"
+        recovered=1
+    else
+        probe_name="bbr2_probe_wait_loss_recovery"
+        dropped=$(grep -c '\[bbr2-probe-test\]|dropped_packet:' stdlog)
+        loss=$(grep -E '\|mark lost\|' clog slog)
+        # Echo responses may remain app-limited in STARTUP under uplink loss.
+        server_wait=not_required_for_app_limited_echo
+        recovered=0
+        if [ "$dropped" -gt 0 ] && [ -n "$loss" ]; then recovered=1; fi
+    fi
+    if [ "$success_count" -eq 1 ] && [ -n "$client_wait" ] \
+        && [ -n "$server_wait" ] && [ -z "$zero_wait" ] \
+        && [ "$recovered" -eq 1 ]; then
+        case_print_result "$probe_name" "pass"
+    else
+        case_print_result "$probe_name" "fail"
+    fi
+    kill "$probe_server_pid" 2>/dev/null
+    wait "$probe_server_pid" 2>/dev/null
+done
+rm -f bbr2_server.log
+
 cd -

@@ -79,7 +79,7 @@ its case is retired so later changes cannot reuse it.
 | Range | New-case namespace | Allocated IDs |
 |-------|--------------------|---------------|
 | `[705, 799]` | QUIC Transport core | `705-706` |
-| `[800, 899]` | Recovery and congestion control | None |
+| `[800, 899]` | Recovery and congestion control | `800-801` (legacy MASQUE), `870-871` |
 | `[900, 999]` | QUIC-TLS | None |
 | `[1000, 1099]` | HTTP/3 framing, streams, and settings | `1000-1012`, `1070-1071` |
 | `[1100, 1149]` | QPACK | None |

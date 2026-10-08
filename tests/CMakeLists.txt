@@ -98,6 +98,7 @@ if(HAVE_CUNIT)
         ${UNIT_TEST_DIR}/xqc_packet_test.c
         ${UNIT_TEST_DIR}/xqc_recv_record_test.c
         ${UNIT_TEST_DIR}/xqc_reno_test.c
+        ${UNIT_TEST_DIR}/xqc_bbr2_test.c
         ${UNIT_TEST_DIR}/xqc_cubic_test.c
         ${UNIT_TEST_DIR}/xqc_stream_frame_test.c
         ${UNIT_TEST_DIR}/xqc_process_frame_test.c

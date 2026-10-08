@@ -3009,6 +3009,15 @@ main(int argc, char *argv[])
         .marking_reinjection = 1,
         .close_dgram_redundancy = XQC_RED_NOT_USE,
     };
+#ifdef XQC_ENABLE_BBR2
+    if (g_test_case == 870 || g_test_case == 871) {
+        conn_settings.cong_ctrl_callback = xqc_bbr2_cb;
+        conn_settings.cc_params.cc_optimization_flags =
+            XQC_BBR2_FLAG_FAST_CONVERGENCE
+            | XQC_BBR2_FLAG_RTTVAR_COMPENSATION;
+        conn_settings.pacing_on = 1;
+    }
+#endif
     if (g_test_case == 1070 || g_test_case == 1071) {
         conn_settings.h3_body_recv_window = 65536;
         conn_settings.h3_body_stream_initial_window = 63000;

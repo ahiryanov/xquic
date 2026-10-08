@@ -1016,6 +1016,14 @@ xqc_client_write_socket(const unsigned char *buf, size_t size,
 
         g_last_sock_op_time = xqc_now();
 
+        /* A repeatable loss branch; never drop the first Initial. */
+        if (g_test_case == 871) {
+            static unsigned int sent_packets;
+            if (++sent_packets % 17 == 0) {
+                printf("[bbr2-probe-test]|dropped_packet:%u|\n", sent_packets);
+                return send_buf_size;
+            }
+        }
         if (TEST_DROP) {
             return send_buf_size;
         }
@@ -1266,6 +1274,14 @@ xqc_client_write_socket_ex(uint64_t path_id,
 
         g_last_sock_op_time = xqc_now();
 
+        /* A repeatable loss branch; never drop the first Initial. */
+        if (g_test_case == 871) {
+            static unsigned int sent_packets;
+            if (++sent_packets % 17 == 0) {
+                printf("[bbr2-probe-test]|dropped_packet:%u|\n", sent_packets);
+                return send_buf_size;
+            }
+        }
         if (TEST_DROP) {
             return send_buf_size;
         }
@@ -5195,6 +5211,15 @@ int main(int argc, char *argv[]) {
         .recv_rate_bytes_per_sec = rate_limit,
         .close_dgram_redundancy = XQC_RED_NOT_USE
     };
+#ifdef XQC_ENABLE_BBR2
+    if (g_test_case == 870 || g_test_case == 871) {
+        conn_settings.cong_ctrl_callback = xqc_bbr2_cb;
+        conn_settings.cc_params.cc_optimization_flags =
+            XQC_BBR2_FLAG_FAST_CONVERGENCE
+            | XQC_BBR2_FLAG_RTTVAR_COMPENSATION;
+        conn_settings.pacing_on = 1;
+    }
+#endif
     if (g_test_case == 1070 || g_test_case == 1071) {
         conn_settings.h3_body_recv_window = 65536;
         conn_settings.h3_body_stream_initial_window = 63000;

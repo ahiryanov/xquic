@@ -15,6 +15,7 @@
 #include "xqc_vint_test.h"
 #include "xqc_recv_record_test.h"
 #include "xqc_reno_test.h"
+#include "xqc_bbr2_test.h"
 #include "xqc_cubic_test.h"
 #include "xqc_packet_test.h"
 #include "xqc_stream_frame_test.h"
@@ -116,6 +117,10 @@ main(int argc, char *argv[])
         || !CU_add_test(pSuite, "xqc_test_reno", xqc_test_reno)
         || !CU_add_test(pSuite, "xqc_test_reno_init_cwnd", xqc_test_reno_init_cwnd)
         || !CU_add_test(pSuite, "xqc_test_reno_init_cwnd_override", xqc_test_reno_init_cwnd_override)
+        || !CU_add_test(pSuite, "xqc_test_bbr2_probe_wait", xqc_test_bbr2_probe_wait)
+        || !CU_add_test(pSuite, "xqc_test_bbr2_probe_wait_boundaries", xqc_test_bbr2_probe_wait_boundaries)
+        || !CU_add_test(pSuite, "xqc_test_bbr2_probe_wait_reno", xqc_test_bbr2_probe_wait_reno)
+        || !CU_add_test(pSuite, "xqc_test_bbr2_probe_wait_idle", xqc_test_bbr2_probe_wait_idle)
         || !CU_add_test(pSuite, "xqc_test_cubic", xqc_test_cubic)
         || !CU_add_test(pSuite, "xqc_test_cubic_init_cwnd", xqc_test_cubic_init_cwnd)
         || !CU_add_test(pSuite, "xqc_test_short_header_parse_cid", xqc_test_short_header_packet_parse_cid)
