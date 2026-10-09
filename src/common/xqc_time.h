@@ -23,6 +23,8 @@ int gettimeofday(struct timeval *tv, struct timezone *tz);
 /**
  * @brief get realtime timestamp
  */
+xqc_usec_t xqc_now(void);
+
 extern xqc_timestamp_pt xqc_realtime_timestamp;
 
 /**
