@@ -12,6 +12,9 @@
 #include "src/http3/xqc_h3_header.h"
 #include "src/http3/qpack/xqc_qpack.h"
 #include "src/transport/xqc_stream.h"
+#include "src/transport/xqc_frame_parser.h"
+#include "src/transport/xqc_packet_in.h"
+#include "src/transport/xqc_packet_out.h"
 #include "src/http3/qpack/stable/xqc_stable.h"
 
 #include "xqc_common_test.h"
@@ -2187,4 +2190,281 @@ xqc_test_h3_settings_frame_size_limit()
     ret = xqc_h3_frm_parse(normal_settings, sizeof(normal_settings), &pctx);
     /* normal-sized SETTINGS frame should parse successfully */
     CU_ASSERT(ret >= 0);
+}
+
+
+/* RFC 9000 Section 4.2: queued application DATA still owns receive credit. */
+void
+xqc_test_h3_body_consumption_credit()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+    xqc_stream_t *stream = h3s->stream;
+    xqc_conn_settings_t settings = {0};
+    settings.h3_body_recv_window = 65536;
+    settings.h3_body_stream_recv_window = 63000;
+    xqc_server_set_conn_settings(conn->engine, &settings);
+    CU_ASSERT(conn->engine->default_conn_settings.h3_body_recv_window == 65536);
+    CU_ASSERT(conn->engine->default_conn_settings.h3_body_stream_recv_window == 63000);
+    conn->conn_settings.h3_body_recv_window = 65536;
+    conn->conn_flow_ctl.fc_max_data_can_recv = 131072;
+    conn->conn_flow_ctl.fc_recv_windows_size = 131072;
+    stream->stream_flow_ctl.fc_max_stream_data_can_recv = 65536;
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 65536;
+
+    unsigned char data[65536], out[65536];
+    for (size_t i = 0; i < sizeof(data); ++i) {
+        data[i] = (unsigned char)i;
+    }
+    /* Tiny DATA fragments must coalesce rather than allocate per byte. */
+    for (size_t i = 0; i < sizeof(data); ++i) {
+        CU_ASSERT_FATAL(xqc_h3_request_buffer_body(h3s->h3r, data + i, 1)
+                        == XQC_OK);
+    }
+    CU_ASSERT(h3s->h3r->body_buf_count == 4);
+    CU_ASSERT(h3s->h3r->body_buf_size == sizeof(data));
+    CU_ASSERT(stream->fc_h3_body_pending == sizeof(data));
+    CU_ASSERT(conn->conn_flow_ctl.fc_h3_body_pending == sizeof(data));
+    xqc_conn_stats_t diag = xqc_conn_get_stats(conn->engine,
+        &conn->scid_set.user_scid);
+    CU_ASSERT(diag.stream_diag_h3_pending == sizeof(data));
+    CU_ASSERT(diag.stream_diag_recv_limit == 131072);
+    CU_ASSERT(diag.stream_diag_recv_window == 131072);
+    free(diag.paths_info);
+    /* Observation is read-only: queued DATA and credit remain unchanged. */
+    CU_ASSERT(conn->conn_flow_ctl.fc_h3_body_pending == sizeof(data));
+    /* Transport has read the DATA and 16 bytes of frame/header overhead. */
+    stream->stream_data_in.next_read_offset = sizeof(data) + 16;
+    conn->conn_flow_ctl.fc_data_read = sizeof(data) + 16;
+    CU_ASSERT(xqc_stream_do_recv_flow_ctl(stream, XQC_TRUE) == XQC_OK);
+    CU_ASSERT(stream->stream_flow_ctl.fc_max_stream_data_can_recv == 65536);
+    CU_ASSERT(conn->conn_flow_ctl.fc_max_data_can_recv == 131072);
+
+    /* BLOCKED frames must not bypass consumption accounting, even when
+     * repeated by a peer that has filled its advertised window. */
+    unsigned char frame[32];
+    xqc_packet_out_t po = {.po_buf = frame};
+    xqc_packet_in_t pi = {0};
+    for (int i = 0; i < 20; ++i) {
+        ssize_t n = xqc_gen_data_blocked_frame(&po, 131072);
+        pi.pos = frame; pi.last = frame + n;
+        CU_ASSERT(xqc_process_data_blocked_frame(conn, &pi) == XQC_OK);
+        n = xqc_gen_stream_data_blocked_frame(&po, stream->stream_id, 65536);
+        pi.pos = frame; pi.last = frame + n;
+        CU_ASSERT(xqc_process_stream_data_blocked_frame(conn, &pi) == XQC_OK);
+    }
+    CU_ASSERT(conn->conn_flow_ctl.fc_max_data_can_recv <= 131072 + 16);
+    CU_ASSERT(stream->stream_flow_ctl.fc_max_stream_data_can_recv <= 65536 + 16);
+
+    unsigned char fin = 0;
+    CU_ASSERT(xqc_h3_request_recv_body(h3s->h3r, out, 32768, &fin) == 32768);
+    CU_ASSERT(fin == 0);
+    CU_ASSERT(h3s->h3r->body_buf_size == 32768);
+    diag = xqc_conn_get_stats(conn->engine,
+        &conn->scid_set.user_scid);
+    CU_ASSERT(diag.stream_diag_h3_pending == 32768);
+    CU_ASSERT(diag.stream_diag_recv_read == sizeof(data) + 16);
+    free(diag.paths_info);
+    CU_ASSERT(stream->stream_flow_ctl.fc_max_stream_data_can_recv > 65536);
+    h3s->h3r->fin_flag = 1;
+    CU_ASSERT(xqc_h3_request_recv_body(h3s->h3r, out + 32768, 32768, &fin)
+              == 32768);
+    CU_ASSERT(fin == 1);
+    CU_ASSERT(memcmp(data, out, sizeof(data)) == 0);
+    CU_ASSERT(h3s->h3r->body_buf_size == 0);
+    CU_ASSERT(h3s->h3r->body_buf_count == 0);
+    CU_ASSERT(stream->fc_h3_body_pending == 0);
+    CU_ASSERT(conn->conn_flow_ctl.fc_h3_body_pending == 0);
+    CU_ASSERT(conn->conn_flow_ctl.fc_max_data_can_recv > 131072);
+    /* Empty DATA still notifies FIN; repeated empty frames use one node. */
+    for (int i = 0; i < 100; ++i) {
+        CU_ASSERT(xqc_h3_request_buffer_body(h3s->h3r, data, 0) == XQC_OK);
+    }
+    CU_ASSERT(h3s->h3r->body_buf_count == 1);
+    CU_ASSERT(h3s->h3r->body_buf_size == 0);
+    CU_ASSERT(xqc_h3_request_recv_body(h3s->h3r, out, sizeof(out), &fin) == 0);
+    CU_ASSERT(fin == 1);
+    CU_ASSERT(h3s->h3r->body_buf_count == 0);
+    /* Two streams retain 120 KiB of a 128 KiB aggregate window.
+     * A fast consumer frees just 1 KiB: less than half, but immediately
+     * reusable by a peer with zero credit (RFC 9000 Sections 4.2/4.3). */
+    conn->conn_flow_ctl.fc_recv_windows_size = 131072;
+    conn->conn_flow_ctl.fc_max_data_can_recv = 131072;
+    conn->conn_flow_ctl.fc_data_recved = 131072;
+    conn->conn_flow_ctl.fc_data_read = 131072;
+    conn->conn_flow_ctl.fc_h3_body_pending = 122880;
+    CU_ASSERT(xqc_conn_do_recv_flow_ctl(conn, 65536, XQC_TRUE) == XQC_OK);
+    CU_ASSERT(conn->conn_flow_ctl.fc_max_data_can_recv == 139264);
+    uint64_t limit = conn->conn_flow_ctl.fc_max_data_can_recv;
+    for (int i = 0; i < 20; ++i) {
+        CU_ASSERT(xqc_conn_do_recv_flow_ctl(conn, 65536, XQC_TRUE) == XQC_OK);
+    }
+    CU_ASSERT(conn->conn_flow_ctl.fc_max_data_can_recv == limit);
+    conn->conn_flow_ctl.fc_h3_body_pending -= 1024;
+    CU_ASSERT(xqc_conn_do_recv_flow_ctl(conn, 65536, XQC_FALSE) == XQC_OK);
+    CU_ASSERT(conn->conn_flow_ctl.fc_max_data_can_recv == limit);
+    CU_ASSERT(xqc_conn_do_recv_flow_ctl(conn, 65536, XQC_TRUE) == XQC_OK);
+    CU_ASSERT(conn->conn_flow_ctl.fc_max_data_can_recv == limit + 1024);
+    CU_ASSERT(conn->conn_flow_ctl.fc_recv_windows_size == 131072);
+    /* No consumed headroom means no new credit, even when blocked. */
+    conn->conn_flow_ctl.fc_max_data_can_recv = 131072;
+    conn->conn_flow_ctl.fc_h3_body_pending = 131072;
+    CU_ASSERT(xqc_conn_do_recv_flow_ctl(conn, 65536, XQC_TRUE) == XQC_OK);
+    CU_ASSERT(conn->conn_flow_ctl.fc_max_data_can_recv == 131072);
+    /* A smaller stream cap must survive both consumption and BLOCKED
+     * handling without shrinking previously advertised offsets. */
+    conn->conn_settings.h3_body_recv_window = 131072;
+    conn->conn_settings.h3_body_stream_recv_window = 65536;
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 131072;
+    stream->stream_flow_ctl.fc_max_stream_data_can_recv = 131072;
+    stream->stream_data_in.next_read_offset = 65537;
+    stream->stream_max_recv_offset = 131072;
+    CU_ASSERT(xqc_stream_do_recv_flow_ctl(stream, XQC_TRUE) == XQC_OK);
+    CU_ASSERT(stream->stream_flow_ctl.fc_stream_recv_window_size == 65536);
+    CU_ASSERT(stream->stream_flow_ctl.fc_max_stream_data_can_recv >= 131072);
+    /* Legacy transport-only accounting keeps its half-window behavior. */
+    conn->conn_settings.h3_body_recv_window = 0;
+    conn->conn_flow_ctl.fc_data_read = 1024;
+    conn->conn_flow_ctl.fc_h3_body_pending = 0;
+    CU_ASSERT(xqc_conn_do_recv_flow_ctl(conn, 65536, XQC_TRUE) == XQC_OK);
+    CU_ASSERT(conn->conn_flow_ctl.fc_max_data_can_recv == 131072);
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
+
+void
+xqc_test_h3_body_cancel_releases_credit()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+    xqc_stream_t *stream = h3s->stream;
+    conn->conn_settings.h3_body_recv_window = 65536;
+    conn->conn_flow_ctl.fc_max_data_can_recv = 131072;
+    conn->conn_flow_ctl.fc_recv_windows_size = 131072;
+    unsigned char data[4096] = {1};
+    CU_ASSERT_FATAL(xqc_h3_request_buffer_body(h3s->h3r, data, sizeof(data))
+                    == XQC_OK);
+    stream->stream_data_in.next_read_offset = sizeof(data);
+    conn->conn_flow_ctl.fc_data_read = sizeof(data);
+    CU_ASSERT(conn->conn_flow_ctl.fc_h3_body_pending == sizeof(data));
+    xqc_h3_request_destroy(h3s->h3r);
+    h3s->h3r = NULL;
+    xqc_conn_stats_t diag = xqc_conn_get_stats(conn->engine,
+        &conn->scid_set.user_scid);
+    CU_ASSERT(diag.stream_diag_h3_pending == 0);
+    CU_ASSERT(diag.stream_diag_recv_read == sizeof(data));
+    free(diag.paths_info);
+    CU_ASSERT(stream->fc_h3_body_pending == 0);
+    CU_ASSERT(conn->conn_flow_ctl.fc_h3_body_pending == 0);
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+
+    /* Delayed QPACK destruction can happen with no transport stream. */
+    h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+    stream = h3s->stream;
+    conn->conn_settings.h3_body_recv_window = 65536;
+    CU_ASSERT_FATAL(xqc_h3_request_buffer_body(h3s->h3r, data, sizeof(data))
+                    == XQC_OK);
+    conn->conn_flow_ctl.fc_data_read = sizeof(data);
+    h3s->stream = NULL;
+    xqc_h3_request_destroy(h3s->h3r);
+    h3s->h3r = NULL;
+    CU_ASSERT(conn->conn_flow_ctl.fc_h3_body_pending == 0);
+    h3s->stream = stream;
+    stream->fc_h3_body_pending = 0;
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
+
+/* RFC 9000 Sections 4.2/4.3: small initial credit, fast-reader growth. */
+void
+xqc_test_h3_body_window_autotunes()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+    xqc_stream_t *stream = h3s->stream;
+    conn->conn_settings.h3_body_recv_window = 16777216;
+    conn->conn_settings.h3_body_stream_recv_window = 8388608;
+    conn->conn_settings.h3_body_stream_initial_window = 65536;
+    conn->conn_flow_ctl.fc_recv_windows_size = 33554432;
+    conn->conn_flow_ctl.fc_max_data_can_recv = 33554432;
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 65536;
+    stream->stream_flow_ctl.fc_max_stream_data_can_recv = 65536;
+    stream->stream_flow_ctl.fc_h3_sample_time = xqc_monotonic_timestamp() - 1000;
+    stream->stream_data_in.next_read_offset = 32768;
+    stream->stream_max_recv_offset = 32768;
+    conn->conn_flow_ctl.fc_data_read = 32768;
+    conn->conn_flow_ctl.fc_data_recved = 32768;
+    CU_ASSERT(xqc_stream_do_recv_flow_ctl(stream, XQC_TRUE) == XQC_OK);
+    CU_ASSERT(stream->stream_flow_ctl.fc_stream_recv_window_size == 131072);
+    uint64_t limit = stream->stream_flow_ctl.fc_max_stream_data_can_recv;
+    for (int i = 0; i < 20; ++i) {
+        CU_ASSERT(xqc_stream_do_recv_flow_ctl(stream, XQC_TRUE) == XQC_OK);
+    }
+    CU_ASSERT(stream->stream_flow_ctl.fc_stream_recv_window_size == 131072);
+    CU_ASSERT(stream->stream_flow_ctl.fc_max_stream_data_can_recv == limit);
+    /* Adaptive growth obeys the cap and does not shrink the aggregate
+     * 32 MiB window through the legacy 16 MiB transport growth ceiling. */
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 8388608;
+    stream->stream_flow_ctl.fc_max_stream_data_can_recv = 8388608;
+    stream->stream_flow_ctl.fc_h3_sample_time = xqc_monotonic_timestamp() - 1000;
+    stream->stream_flow_ctl.fc_h3_sample_consumed = 0;
+    stream->stream_data_in.next_read_offset = 4194304;
+    stream->stream_max_recv_offset = 4194304;
+    conn->conn_flow_ctl.fc_data_read = 4194304;
+    conn->conn_flow_ctl.fc_data_recved = 4194304;
+    CU_ASSERT(xqc_stream_do_recv_flow_ctl(stream, XQC_TRUE) == XQC_OK);
+    CU_ASSERT(stream->stream_flow_ctl.fc_stream_recv_window_size == 8388608);
+    conn->conn_flow_ctl.fc_data_read = 20000000;
+    conn->conn_flow_ctl.fc_data_recved = 20000000;
+    conn->conn_flow_ctl.fc_last_window_update_time = xqc_monotonic_timestamp();
+    CU_ASSERT(xqc_conn_do_recv_flow_ctl(conn, 8388608, XQC_TRUE) == XQC_OK);
+    CU_ASSERT(conn->conn_flow_ctl.fc_recv_windows_size == 33554432);
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
+}
+
+void
+xqc_test_h3_body_window_preserves_slow_credit()
+{
+    xqc_connection_t *conn = NULL;
+    xqc_h3_conn_t *h3c = NULL;
+    xqc_h3_stream_t *h3s = xqc_h3_msgerr_setup(&conn, &h3c);
+    CU_ASSERT_FATAL(h3s != NULL);
+    xqc_stream_t *stream = h3s->stream;
+    conn->conn_settings.h3_body_recv_window = 16777216;
+    conn->conn_settings.h3_body_stream_recv_window = 8388608;
+    conn->conn_settings.h3_body_stream_initial_window = 65536;
+    conn->conn_flow_ctl.fc_recv_windows_size = 33554432;
+    conn->conn_flow_ctl.fc_max_data_can_recv = 33554432;
+    stream->stream_flow_ctl.fc_stream_recv_window_size = 65536;
+    stream->stream_flow_ctl.fc_max_stream_data_can_recv = 65536;
+    stream->stream_flow_ctl.fc_h3_sample_time = xqc_monotonic_timestamp() - 1000;
+    stream->stream_data_in.next_read_offset = 32768;
+    stream->stream_max_recv_offset = 32768;
+    conn->conn_flow_ctl.fc_data_read = 32768;
+    conn->conn_flow_ctl.fc_data_recved = 32768;
+    /* Transport reads and repeated BLOCKED processing cannot grow credit. */
+    for (int i = 0; i < 20; ++i) {
+        CU_ASSERT(xqc_stream_do_recv_flow_ctl(stream, XQC_FALSE) == XQC_OK);
+    }
+    CU_ASSERT(stream->stream_flow_ctl.fc_stream_recv_window_size == 65536);
+    /* Actual consumption with a long sampling interval remains small. */
+    stream->stream_flow_ctl.fc_h3_sample_time = 1;
+    CU_ASSERT(xqc_stream_do_recv_flow_ctl(stream, XQC_TRUE) == XQC_OK);
+    CU_ASSERT(stream->stream_flow_ctl.fc_stream_recv_window_size == 65536);
+    /* Even a fast reader must not grow while other H3 bodies retain three quarters of
+     * the aggregate budget. Existing advertised offsets cannot retract. */
+    stream->stream_flow_ctl.fc_h3_sample_time = xqc_monotonic_timestamp() - 1000;
+    stream->stream_flow_ctl.fc_h3_sample_consumed = 0;
+    conn->conn_flow_ctl.fc_h3_body_pending = 25165824;
+    conn->conn_flow_ctl.fc_data_read = 25165824 + 32768;
+    conn->conn_flow_ctl.fc_data_recved = 25165824 + 32768;
+    CU_ASSERT(xqc_stream_do_recv_flow_ctl(stream, XQC_TRUE) == XQC_OK);
+    CU_ASSERT(stream->stream_flow_ctl.fc_stream_recv_window_size == 65536);
+    conn->conn_flow_ctl.fc_h3_body_pending = 0;
+    xqc_h3_msgerr_teardown(h3s, h3c, conn);
 }

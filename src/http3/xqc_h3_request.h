@@ -9,6 +9,7 @@
 #include "src/http3/xqc_h3_header.h"
 
 #define XQC_H3_REQUEST_INITIAL_HEADERS_CAPACITY 32
+#define XQC_H3_BODY_BUF_BLOCK_SIZE 16384
 
 typedef struct xqc_h3_request_s {
     /* h3 stream handler */
@@ -37,6 +38,7 @@ typedef struct xqc_h3_request_s {
     /* received body buf list and statistic information */
     xqc_list_head_t                 body_buf;
     uint64_t                        body_buf_count;
+    size_t                          body_buf_size;
     size_t                          body_recvd;
     size_t                          body_recvd_final_size;
 
@@ -93,6 +95,8 @@ xqc_h3_request_t *xqc_h3_request_create_inner(xqc_h3_conn_t *h3_conn, xqc_h3_str
     void *user_data);
 
 void xqc_h3_request_destroy(xqc_h3_request_t *h3_request);
+xqc_int_t xqc_h3_request_buffer_body(xqc_h3_request_t *h3r,
+    const unsigned char *data, size_t len);
 
 /**
  * @brief notify events

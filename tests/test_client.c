@@ -5196,6 +5196,16 @@ int main(int argc, char *argv[]) {
         .recv_rate_bytes_per_sec = rate_limit,
         .close_dgram_redundancy = XQC_RED_NOT_USE
     };
+    if (g_test_case == 1070 || g_test_case == 1071) {
+        conn_settings.h3_body_recv_window = 65536;
+        conn_settings.h3_body_stream_initial_window = 63000;
+    }
+    if (g_test_case == 1072 || g_test_case == 1073) {
+        conn_settings.h3_body_recv_window = 256 * 1024 * 1024;
+        conn_settings.h3_body_stream_recv_window = 16 * 1024 * 1024;
+        conn_settings.h3_body_stream_initial_window = 1 * 1024 * 1024;
+    }
+
 
     strncpy(conn_settings.conn_option_str, conn_options, XQC_CO_STR_MAX_LEN - 1);
     conn_settings.conn_option_str[XQC_CO_STR_MAX_LEN - 1] = '\0';

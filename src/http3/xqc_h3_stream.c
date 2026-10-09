@@ -984,7 +984,6 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
     xqc_int_t ret;
     xqc_bool_t blocked = XQC_FALSE;
     xqc_http_headers_t *hdrs = NULL;
-    xqc_var_buf_t *buf;
 
     if (data_len == 0) {
         if (fin_flag) {
@@ -1123,25 +1122,12 @@ xqc_h3_stream_process_request(xqc_h3_stream_t *h3s, unsigned char *data, size_t 
             case XQC_H3_FRM_DATA:
                 len = xqc_min(pctx->frame.len - pctx->frame.consumed_len,
                               data_len - processed);
-                buf = xqc_var_buf_create(len);
-                if (buf == NULL) {
-                    return -XQC_EMALLOC;
-                }
-
-                ret = xqc_var_buf_save_data(buf, data + processed, len);
+                ret = xqc_h3_request_buffer_body(h3s->h3r,
+                    data + processed, len);
                 if (ret != XQC_OK) {
-                    xqc_var_buf_free(buf);
                     xqc_h3_frm_reset_pctx(pctx);
                     return ret;
                 }
-
-                /* add data to buffer list */
-                ret = xqc_list_buf_to_tail(&h3s->h3r->body_buf, buf);
-                if (ret < 0) {
-                    xqc_h3_frm_reset_pctx(pctx);
-                    return ret;
-                }
-                h3s->h3r->body_buf_count++;
 
                 processed += len;
                 pctx->frame.consumed_len += len;

@@ -1032,3 +1032,115 @@ xqc_test_conn_stream_unsent_cap()
 
     xqc_engine_destroy(engine);
 }
+
+/* RFC 9000 Sections 4.1-4.3: bounded aggregate and per-stream credit. */
+static xqc_connection_t *
+xqc_test_large_h3_connect(xqc_engine_t *engine, uint32_t base,
+    uint32_t cap, uint32_t initial)
+{
+    xqc_conn_settings_t settings = {0};
+    xqc_conn_ssl_config_t ssl = {0};
+    settings.proto_version = XQC_VERSION_V1;
+    settings.h3_body_recv_window = base;
+    settings.h3_body_stream_recv_window = cap;
+    settings.h3_body_stream_initial_window = initial;
+    const xqc_cid_t *cid = xqc_connect(engine, &settings, NULL, 0, "", 0,
+        &ssl, NULL, 0, "transport", NULL);
+    return cid ? xqc_engine_conns_hash_find(engine, cid, 's') : NULL;
+}
+
+void
+xqc_test_h3_large_window_credit(void)
+{
+    xqc_engine_t *engine = test_create_engine();
+    CU_ASSERT_FATAL(engine != NULL);
+    xqc_connection_t *conn = xqc_test_large_h3_connect(engine,
+        256 * 1024 * 1024, 16 * 1024 * 1024, 1 * 1024 * 1024);
+    CU_ASSERT_FATAL(conn != NULL);
+    CU_ASSERT_EQUAL(conn->conn_settings.h3_body_recv_window, 268435456);
+    CU_ASSERT_EQUAL(conn->local_settings.max_data, 536870912);
+    CU_ASSERT_EQUAL(conn->local_settings.max_stream_data_bidi_local, 1048576);
+    CU_ASSERT_EQUAL(conn->local_settings.max_stream_data_bidi_remote, 1048576);
+    CU_ASSERT_EQUAL(conn->conn_flow_ctl.fc_recv_windows_size, 536870912);
+    conn->conn_state = XQC_CONN_STATE_ESTABED;
+    conn->conn_flow_ctl.fc_max_streams_bidi_can_send = 1024;
+    xqc_stream_t *stream = xqc_create_stream_with_conn(conn,
+        XQC_UNDEFINE_STREAM_ID, XQC_CLI_BID, NULL, NULL);
+    CU_ASSERT_FATAL(stream != NULL);
+    CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_stream_recv_window_size, 1048576);
+    for (unsigned i = 0; i < 7; ++i) {
+        uint64_t old = stream->stream_flow_ctl.fc_stream_recv_window_size;
+        stream->stream_flow_ctl.fc_h3_sample_time =
+            xqc_monotonic_timestamp() - 1000;
+        stream->stream_flow_ctl.fc_h3_sample_consumed =
+            stream->stream_data_in.next_read_offset;
+        stream->stream_data_in.next_read_offset += old / 2;
+        stream->stream_max_recv_offset = stream->stream_data_in.next_read_offset;
+        conn->conn_flow_ctl.fc_data_read = stream->stream_data_in.next_read_offset;
+        conn->conn_flow_ctl.fc_data_recved = conn->conn_flow_ctl.fc_data_read;
+        CU_ASSERT_EQUAL(xqc_stream_do_recv_flow_ctl(stream, XQC_TRUE), XQC_OK);
+        CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_stream_recv_window_size,
+            xqc_min(2 * old, 16777216));
+    }
+    /* Connection growth/refill cannot shrink to the legacy 16 MiB cap. */
+    conn->conn_flow_ctl.fc_data_read = 268435457;
+    conn->conn_flow_ctl.fc_data_recved = 268435457;
+    conn->conn_flow_ctl.fc_last_window_update_time = xqc_monotonic_timestamp();
+    CU_ASSERT_EQUAL(xqc_conn_do_recv_flow_ctl(conn, 16777216, XQC_TRUE), XQC_OK);
+    CU_ASSERT_EQUAL(conn->conn_flow_ctl.fc_recv_windows_size, 536870912);
+    CU_ASSERT(conn->conn_flow_ctl.fc_max_data_can_recv
+        - conn->conn_flow_ctl.fc_data_read <= 536870912);
+    xqc_engine_destroy(engine);
+}
+
+void
+xqc_test_h3_large_window_bounds(void)
+{
+    const uint32_t caps[] = {0, UINT32_MAX};
+    for (unsigned i = 0; i < 2; ++i) {
+        xqc_engine_t *engine = test_create_engine();
+        CU_ASSERT_FATAL(engine != NULL);
+        xqc_connection_t *conn = xqc_test_large_h3_connect(engine,
+            UINT32_MAX, caps[i], UINT32_MAX);
+        CU_ASSERT_FATAL(conn != NULL);
+        CU_ASSERT_EQUAL(conn->conn_settings.h3_body_recv_window, 268435456);
+        CU_ASSERT_EQUAL(conn->conn_settings.h3_body_stream_recv_window, 16777216);
+        CU_ASSERT_EQUAL(conn->conn_settings.h3_body_stream_initial_window, 16777216);
+        CU_ASSERT_EQUAL(conn->local_settings.max_data, 536870912);
+        CU_ASSERT_EQUAL(conn->local_settings.max_stream_data_bidi_remote, 16777216);
+        xqc_engine_destroy(engine);
+    }
+    xqc_engine_t *engine = test_create_engine();
+    CU_ASSERT_FATAL(engine != NULL);
+    xqc_connection_t *conn = xqc_test_large_h3_connect(engine,
+        268435456, 16777216, 1048576);
+    CU_ASSERT_FATAL(conn != NULL);
+    conn->conn_state = XQC_CONN_STATE_ESTABED;
+    conn->conn_flow_ctl.fc_max_streams_bidi_can_send = 1024;
+    xqc_stream_t *stream = xqc_create_stream_with_conn(conn,
+        XQC_UNDEFINE_STREAM_ID, XQC_CLI_BID, NULL, NULL);
+    CU_ASSERT_FATAL(stream != NULL);
+    uint64_t limit = stream->stream_flow_ctl.fc_max_stream_data_can_recv;
+    stream->stream_data_in.next_read_offset = 1048576;
+    stream->stream_max_recv_offset = 1048576;
+    stream->fc_h3_body_pending = 1048576;
+    conn->conn_flow_ctl.fc_data_read = 1048576;
+    conn->conn_flow_ctl.fc_data_recved = 1048576;
+    conn->conn_flow_ctl.fc_h3_body_pending = 1048576;
+    for (unsigned i = 0; i < 20; ++i) {
+        CU_ASSERT_EQUAL(xqc_stream_do_recv_flow_ctl(stream, XQC_FALSE), XQC_OK);
+    }
+    CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_max_stream_data_can_recv, limit);
+    CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_stream_recv_window_size, 1048576);
+    /* Fast growth is also blocked at three quarters of the new budget. */
+    stream->fc_h3_body_pending = 0;
+    stream->stream_data_in.next_read_offset = 524288;
+    stream->stream_flow_ctl.fc_h3_sample_time = xqc_monotonic_timestamp() - 1000;
+    stream->stream_flow_ctl.fc_h3_sample_consumed = 0;
+    conn->conn_flow_ctl.fc_h3_body_pending = 402653184;
+    conn->conn_flow_ctl.fc_data_read = 402653184 + 524288;
+    conn->conn_flow_ctl.fc_data_recved = conn->conn_flow_ctl.fc_data_read;
+    CU_ASSERT_EQUAL(xqc_stream_do_recv_flow_ctl(stream, XQC_TRUE), XQC_OK);
+    CU_ASSERT_EQUAL(stream->stream_flow_ctl.fc_stream_recv_window_size, 1048576);
+    xqc_engine_destroy(engine);
+}

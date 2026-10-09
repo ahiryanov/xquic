@@ -407,8 +407,54 @@ xqc_stream_do_send_flow_ctl(xqc_stream_t *stream)
     return ret;
 }
 
+/* RFC 9000 Sections 4.2/4.3: size credit for application consumption,
+ * not merely transport reads. A fast reader can grow beyond its small
+ * initial allowance without giving every stalled receiver a large BDP.
+ * Keep a separate sample: tiny credit refills must not reset its clock. */
+static void
+xqc_stream_autotune_h3_window(xqc_stream_t *stream, uint64_t consumed,
+    xqc_usec_t now)
+{
+    xqc_connection_t *conn = stream->stream_conn;
+    xqc_stream_flow_ctl_t *fc = &stream->stream_flow_ctl;
+    uint64_t window = fc->fc_stream_recv_window_size;
+    if (!conn->conn_settings.h3_body_recv_window
+        || !conn->conn_settings.h3_body_stream_initial_window
+        || stream->recv_rate_bytes_per_sec
+        || stream->stream_state_recv != XQC_RECV_STREAM_ST_RECV)
+    {
+        return;
+    }
+    if (!fc->fc_h3_sample_time || now < fc->fc_h3_sample_time
+        || consumed < fc->fc_h3_sample_consumed)
+    {
+        fc->fc_h3_sample_time = now;
+        fc->fc_h3_sample_consumed = consumed;
+        return;
+    }
+    if (consumed - fc->fc_h3_sample_consumed < window / 2) {
+        return;
+    }
+    xqc_usec_t rtt = xqc_conn_get_max_srtt(conn);
+    if (!rtt) {
+        rtt = XQC_FC_INIT_RTT;
+    }
+    uint64_t cap = conn->conn_settings.h3_body_stream_recv_window
+        ? conn->conn_settings.h3_body_stream_recv_window
+        : conn->conn_settings.h3_body_recv_window;
+    if (now - fc->fc_h3_sample_time <= 2 * rtt
+        && stream->fc_h3_body_pending <= window / 4
+        && conn->conn_flow_ctl.fc_h3_body_pending
+           < 3ULL * conn->conn_settings.h3_body_recv_window / 2)
+    {
+        fc->fc_stream_recv_window_size = xqc_min(2 * window, cap);
+    }
+    fc->fc_h3_sample_time = now;
+    fc->fc_h3_sample_consumed = consumed;
+}
+
 int
-xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
+xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream, xqc_bool_t body_consumed)
 {
     xqc_connection_t *conn = stream->stream_conn;
     xqc_usec_t now = xqc_monotonic_timestamp();
@@ -419,12 +465,39 @@ xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
     uint64_t old_fc_win = 0;
 
     /* stream level */
-    uint64_t available_window = stream->stream_flow_ctl.fc_max_stream_data_can_recv -
-                                stream->stream_data_in.next_read_offset;
+    /* A transport read moves DATA into H3, not necessarily to the final
+     * consumer. Keep its receive credit held while the body is queued. */
+    uint64_t consumed = stream->stream_data_in.next_read_offset
+                        - stream->fc_h3_body_pending;
+    if (body_consumed) {
+        xqc_stream_autotune_h3_window(stream, consumed, now);
+    }
+    uint64_t available_window =
+        stream->stream_flow_ctl.fc_max_stream_data_can_recv - consumed;
 
-    if (available_window < stream->stream_flow_ctl.fc_stream_recv_window_size / 2) {
+    /* RFC 9000 Sections 4.2/4.3: unread DATA retains credit, but a
+     * credit-starved peer must be able to reuse even a small consumption.
+     * Do not grow the window or mint credit on repeated BLOCKED frames. */
+    uint64_t recv_window =
+        stream->stream_flow_ctl.fc_stream_recv_window_size;
+    uint64_t peer_credit =
+        stream->stream_flow_ctl.fc_max_stream_data_can_recv
+        - stream->stream_max_recv_offset;
+    if (body_consumed && conn->conn_settings.h3_body_recv_window
+        && available_window >= recv_window / 2
+        && available_window < recv_window && peer_credit < recv_window / 2)
+    {
+        stream->stream_flow_ctl.fc_max_stream_data_can_recv +=
+            recv_window - available_window;
+        xqc_write_max_stream_data_to_packet(conn, stream->stream_id,
+            stream->stream_flow_ctl.fc_max_stream_data_can_recv,
+            XQC_PTYPE_SHORT_HEADER);
+
+    } else if (available_window < recv_window / 2) {
         if (!stream->recv_rate_bytes_per_sec) {
-            if (stream->stream_flow_ctl.fc_last_window_update_time &&
+            if (!(conn->conn_settings.h3_body_recv_window
+                  && conn->conn_settings.h3_body_stream_initial_window)
+                && stream->stream_flow_ctl.fc_last_window_update_time &&
                 (now - stream->stream_flow_ctl.fc_last_window_update_time <
                  2 * min_srtt)) {
                 stream->stream_flow_ctl.fc_stream_recv_window_size =
@@ -450,6 +523,13 @@ xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
                     stream->stream_flow_ctl.fc_stream_recv_window_size);
         }
 
+        if (conn->conn_settings.h3_body_recv_window) {
+            stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_min(
+                stream->stream_flow_ctl.fc_stream_recv_window_size,
+                conn->conn_settings.h3_body_stream_recv_window
+                    ? conn->conn_settings.h3_body_stream_recv_window
+                    : conn->conn_settings.h3_body_recv_window);
+        }
         stream->stream_flow_ctl.fc_last_window_update_time = now;
 
         if (stream->stream_flow_ctl.fc_stream_recv_window_size > available_window) {
@@ -469,22 +549,52 @@ xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
         }
     }
 
-    /* connection level */
-    available_window =
-        conn->conn_flow_ctl.fc_max_data_can_recv - conn->conn_flow_ctl.fc_data_read;
+    return xqc_conn_do_recv_flow_ctl(conn,
+        stream->stream_flow_ctl.fc_stream_recv_window_size, body_consumed);
+}
 
-    if (available_window < conn->conn_flow_ctl.fc_recv_windows_size / 2) {
+int
+xqc_conn_do_recv_flow_ctl(xqc_connection_t *conn, uint64_t stream_window,
+    xqc_bool_t body_consumed)
+{
+    xqc_usec_t now = xqc_monotonic_timestamp();
+    xqc_usec_t min_srtt = xqc_conn_get_min_srtt(conn, 0);
+    xqc_usec_t max_srtt = 0;
+    uint64_t old_fc_win = 0;
+    uint64_t consumed = conn->conn_flow_ctl.fc_data_read
+                        - conn->conn_flow_ctl.fc_h3_body_pending;
+    uint64_t available_window =
+        conn->conn_flow_ctl.fc_max_data_can_recv - consumed;
+
+    /* H3 bodies on other streams can retain most of the connection
+     * window. Waiting for half of it to be consumed strands fast streams
+     * with no peer credit even after they free part of the buffer. */
+    uint64_t recv_window = conn->conn_flow_ctl.fc_recv_windows_size;
+    uint64_t max_window = conn->conn_settings.h3_body_recv_window
+        ? 2ULL * conn->conn_settings.h3_body_recv_window : XQC_MAX_RECV_WINDOW;
+    uint64_t peer_credit = conn->conn_flow_ctl.fc_max_data_can_recv
+                           - conn->conn_flow_ctl.fc_data_recved;
+    if (body_consumed && conn->conn_settings.h3_body_recv_window
+        && available_window >= recv_window / 2
+        && available_window < recv_window && peer_credit < recv_window / 2)
+    {
+        conn->conn_flow_ctl.fc_max_data_can_recv +=
+            recv_window - available_window;
+        xqc_write_max_data_to_packet(conn,
+            conn->conn_flow_ctl.fc_max_data_can_recv);
+
+    } else if (available_window < recv_window / 2) {
         if (!conn->conn_settings.recv_rate_bytes_per_sec) {
             if (conn->conn_flow_ctl.fc_last_window_update_time &&
                 (now - conn->conn_flow_ctl.fc_last_window_update_time < 2 * min_srtt)) {
                 conn->conn_flow_ctl.fc_recv_windows_size = xqc_min(
-                    conn->conn_flow_ctl.fc_recv_windows_size * 2, XQC_MAX_RECV_WINDOW);
+                    conn->conn_flow_ctl.fc_recv_windows_size * 2, max_window);
             }
 
             if (conn->conn_flow_ctl.fc_recv_windows_size <
-                1.5 * stream->stream_flow_ctl.fc_stream_recv_window_size) {
+                1.5 * stream_window) {
                 conn->conn_flow_ctl.fc_recv_windows_size =
-                    (uint64_t)(1.5 * stream->stream_flow_ctl.fc_stream_recv_window_size);
+                    (uint64_t)(1.5 * stream_window);
             }
 
         } else {
@@ -498,12 +608,17 @@ xqc_stream_do_recv_flow_ctl(xqc_stream_t *stream)
             conn->conn_flow_ctl.fc_recv_windows_size =
                 xqc_max(XQC_MIN_RECV_WINDOW, conn->conn_flow_ctl.fc_recv_windows_size);
             conn->conn_flow_ctl.fc_recv_windows_size =
-                xqc_min(XQC_MAX_RECV_WINDOW, conn->conn_flow_ctl.fc_recv_windows_size);
+                xqc_min(max_window, conn->conn_flow_ctl.fc_recv_windows_size);
             xqc_log(conn->log, XQC_LOG_DEBUG,
                     "|conn_level|fc_win_update|old_fc_win:%ui|fc_win:%ui|", old_fc_win,
                     conn->conn_flow_ctl.fc_recv_windows_size);
         }
 
+        if (conn->conn_settings.h3_body_recv_window) {
+            conn->conn_flow_ctl.fc_recv_windows_size = xqc_min(
+                conn->conn_flow_ctl.fc_recv_windows_size,
+                2ULL * conn->conn_settings.h3_body_recv_window);
+        }
         conn->conn_flow_ctl.fc_last_window_update_time = now;
 
         if (conn->conn_flow_ctl.fc_recv_windows_size > available_window) {
@@ -1143,8 +1258,16 @@ xqc_stream_update_settings(xqc_stream_t *stream, xqc_stream_settings_t *settings
                 XQC_MAX_RECV_WINDOW, stream->stream_flow_ctl.fc_stream_recv_window_size);
             xqc_log(conn->log, XQC_LOG_DEBUG, "|fc_win_update|old_fc_win:%ui|fc_win:%ui|",
                     old_fc_win, stream->stream_flow_ctl.fc_stream_recv_window_size);
-            new_offset = stream->stream_data_in.next_read_offset +
-                         stream->stream_flow_ctl.fc_stream_recv_window_size;
+            if (conn->conn_settings.h3_body_recv_window) {
+                stream->stream_flow_ctl.fc_stream_recv_window_size = xqc_min(
+                    stream->stream_flow_ctl.fc_stream_recv_window_size,
+                    conn->conn_settings.h3_body_stream_recv_window
+                    ? conn->conn_settings.h3_body_stream_recv_window
+                    : conn->conn_settings.h3_body_recv_window);
+            }
+            new_offset = stream->stream_data_in.next_read_offset
+                         - stream->fc_h3_body_pending
+                         + stream->stream_flow_ctl.fc_stream_recv_window_size;
 
             if (new_offset > stream->stream_flow_ctl.fc_max_stream_data_can_recv) {
                 stream->stream_flow_ctl.fc_max_stream_data_can_recv = new_offset;
@@ -1658,7 +1781,7 @@ xqc_stream_recv(xqc_stream_t *stream, unsigned char *recv_buf, size_t recv_buf_s
                   recv_buf_size, *fin, 0, 0, 0, 0);
     xqc_stream_shutdown_read(stream);
 
-    int ret = xqc_stream_do_recv_flow_ctl(stream);
+    int ret = xqc_stream_do_recv_flow_ctl(stream, XQC_FALSE);
     if (ret) {
         xqc_log(stream->stream_conn->log, XQC_LOG_ERROR,
                 "|xqc_stream_do_recv_flow_ctl error|stream_id:%ui|", stream->stream_id);

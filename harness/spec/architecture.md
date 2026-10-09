@@ -139,3 +139,22 @@ following beyond what upstream documents:
   `xqc_h3_ctx_destroy()` as well.
 - mqvpn maps its INFO log level to xquic WARN; WARN-level logging must not
   be per-packet.
+
+## H3 receive-credit budget
+
+Opt-in H3 receive credit supports an aggregate window up to 512 MiB per
+connection and direction (twice the 256 MiB base). The independently bounded
+stream window remains at most 16 MiB; consumers select their initial window.
+These limits do not preallocate buffers or bound total process RSS. Unread
+H3 DATA retains credit until consumed, per RFC 9000 Sections 4.1-4.3.
+
+## Connection flow-control diagnostic snapshot
+
+`xqc_conn_get_stats()` also reports read-only `stream_diag_*` connection
+fields: advertised/used/read receive offsets, retained H3 DATA, receive
+window/last-update timestamp, and advertised/used send offsets and the
+connection DATA_BLOCKED flag. Offsets are cumulative; retained H3 DATA is a
+gauge. These values share the connection clock and lifetime. Querying stats
+must neither consume body data nor release flow-control credit. The stats
+struct has grown: pinned consumers must rebuild against the matching
+header and shared library. This changes the local ABI, not the wire protocol.

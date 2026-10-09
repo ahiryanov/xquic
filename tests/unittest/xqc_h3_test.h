@@ -63,4 +63,10 @@ void xqc_test_h3_blocked_stream_limit_uses_local();
 /* ALIBABA-2026-42073004: SETTINGS frame size limit */
 void xqc_test_h3_settings_frame_size_limit();
 
+
+void xqc_test_h3_body_consumption_credit();
+void xqc_test_h3_body_cancel_releases_credit();
+void xqc_test_h3_body_window_autotunes();
+void xqc_test_h3_body_window_preserves_slow_credit();
+
 #endif // XQUIC_XQC_H3_TEST_H
