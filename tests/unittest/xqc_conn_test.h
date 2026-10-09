@@ -38,4 +38,7 @@ void xqc_test_alpn_error_code_value(void);
 void xqc_test_alpn_server_cb_propagates_error(void);
 void xqc_test_alpn_client_handshake_no_alpn(void);
 
+void xqc_test_h3_large_window_credit(void);
+void xqc_test_h3_large_window_bounds(void);
+
 #endif

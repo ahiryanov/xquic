@@ -139,3 +139,14 @@ following beyond what upstream documents:
   `xqc_h3_ctx_destroy()` as well.
 - mqvpn maps its INFO log level to xquic WARN; WARN-level logging must not
   be per-packet.
+
+## Connection flow-control diagnostic snapshot
+
+`xqc_conn_get_stats()` also reports read-only `stream_diag_*` connection
+fields: advertised/used/read receive offsets, retained H3 DATA, receive
+window/last-update timestamp, and advertised/used send offsets and the
+connection DATA_BLOCKED flag. Offsets are cumulative; retained H3 DATA is a
+gauge. These values share the connection clock and lifetime. Querying stats
+must neither consume body data nor release flow-control credit. The stats
+struct has grown: pinned consumers must rebuild against the matching
+header and shared library. This changes the local ABI, not the wire protocol.

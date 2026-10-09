@@ -5695,4 +5695,68 @@ fi
 
 killall test_server 2> /dev/null
 
+
+# HTTP/3 application-consumption credit, RFC 9000 Section 4.2.
+killall test_server 2>/dev/null
+clear_log
+rm -f test_session xqc_token tp_localhost h3_body_credit_server.log
+${SERVER_BIN} -l d -e -x 1070 > h3_body_credit_server.log &
+sleep 1
+${CLIENT_BIN} -s 1048576 -l d -t 5 -E -P 2 -n 2 -x 1070 > stdlog
+success_count=$(grep -c ">>>>>>>> pass:1" stdlog)
+diag_count=$(grep -c '\[h3-body-diag\]|request_empty:1|snapshot:1|' h3_body_credit_server.log)
+if [ "$success_count" -eq 2 ] && [ "$diag_count" -eq 2 ]; then
+    case_print_result "h3_body_credit_normal_transfer" "pass"
+else
+    case_print_result "h3_body_credit_normal_transfer" "fail"
+fi
+killall test_server 2>/dev/null
+clear_log
+rm -f test_session xqc_token tp_localhost h3_body_credit_server.log
+${SERVER_BIN} -l d -e -x 1071 > h3_body_credit_server.log &
+sleep 1
+${CLIENT_BIN} -s 1048576 -l d -t 5 -E -P 2 -n 2 -x 1071 > stdlog
+success_count=$(grep -c ">>>>>>>> pass:1" stdlog)
+bounded=$(grep '\[h3-body-credit\].*|other:1|bounded:1|snapshot:1|' h3_body_credit_server.log)
+partial=$(grep '\[h3-body-partial-credit\]|read:128|consumed:1|bounded:1|' h3_body_credit_server.log)
+if [ "$success_count" -eq 2 ] && [ -n "$bounded" ] && [ -n "$partial" ]; then
+    case_print_result "h3_body_credit_paused_consumer_resumes" "pass"
+else
+    case_print_result "h3_body_credit_paused_consumer_resumes" "fail"
+fi
+killall test_server 2>/dev/null
+rm -f h3_body_credit_server.log
+
+
+# Large H3 aggregate: normal transfer and a paused reader beside a fast one.
+for window_case in 1072 1073; do
+    killall test_server 2>/dev/null
+    clear_log
+    rm -f test_session xqc_token tp_localhost
+    ${SERVER_BIN} -l d -e -x "$window_case" > h3_large_window_server.log &
+    window_server_pid=$!
+    sleep 1
+    ${CLIENT_BIN} -s 8388608 -l d -t 5 -E -P 2 -n 2 -x "$window_case" > stdlog
+    success_count=$(grep -c ">>>>>>>> pass:1" stdlog)
+    settings_count=$(grep -c '\[h3-large-window\]|initial:1|stream_cap:1|aggregate:1|' h3_large_window_server.log)
+    recovered=1
+    if [ "$window_case" -eq 1073 ]; then
+        bounded=$(grep '\[h3-body-credit\].*|other:1|bounded:1|snapshot:1|' h3_large_window_server.log)
+        partial=$(grep '\[h3-body-partial-credit\]|read:128|consumed:1|bounded:1|' h3_large_window_server.log)
+        recovered=0
+        if [ -n "$bounded" ] && [ -n "$partial" ]; then recovered=1; fi
+        window_name=h3_large_window_paused_consumer
+    else
+        window_name=h3_large_window_normal_transfer
+    fi
+    if [ "$success_count" -eq 2 ] && [ "$settings_count" -eq 2 ] && [ "$recovered" -eq 1 ]; then
+        case_print_result "$window_name" "pass"
+    else
+        case_print_result "$window_name" "fail"
+    fi
+    kill "$window_server_pid" 2>/dev/null
+    wait "$window_server_pid" 2>/dev/null
+done
+rm -f h3_large_window_server.log
+
 cd -

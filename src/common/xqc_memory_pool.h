@@ -189,19 +189,28 @@ xqc_destroy_pool(xqc_memory_pool_t *pool)
 #endif
 }
 
+#define XQC_ALIGNMENT (16)
+#define xqc_align_ptr(p, a) ((char *) (((uintptr_t)(p) + ((uintptr_t)a - 1)) & ~((uintptr_t)a - 1)))
+
 static inline void *
 xqc_palloc_large(xqc_memory_pool_t *pool, size_t size)
 {
+    /* The large-list header is not necessarily aligned at its data member.
+     * Reserve slack and align the returned payload just like small palloc. */
+    const size_t overhead = sizeof(xqc_memory_large_t) + XQC_ALIGNMENT - 1;
+    if (size > SIZE_MAX - overhead) {
+        return NULL;
+    }
 #ifdef XQC_PROTECT_POOL_MEM
     xqc_memory_large_t *p;
     if (pool->protect_block) {
-        p = xqc_mempool_malloc_protected(size + sizeof(xqc_memory_large_t), pool->page_size);
+        p = xqc_mempool_malloc_protected(size + overhead, pool->page_size);
         
     } else {
-        p = xqc_malloc(size + sizeof(xqc_memory_large_t));
+        p = xqc_malloc(size + overhead);
     }
 #else
-    xqc_memory_large_t *p = xqc_malloc(size + sizeof(xqc_memory_large_t));
+    xqc_memory_large_t *p = xqc_malloc(size + overhead);
 #endif
 
     if (p == NULL) {
@@ -212,11 +221,9 @@ xqc_palloc_large(xqc_memory_pool_t *pool, size_t size)
     p->next = pool->large;
     pool->large = p;
 
-    return p->data;
+    return xqc_align_ptr(p->data, XQC_ALIGNMENT);
 }
 
-#define XQC_ALIGNMENT (16)
-#define xqc_align_ptr(p, a) ((char *) (((uintptr_t)(p) + ((uintptr_t)a - 1)) & ~((uintptr_t)a - 1)))
 
 static inline void *
 xqc_palloc_block(xqc_memory_pool_t *pool, size_t size)
