@@ -1452,6 +1452,26 @@ typedef struct xqc_conn_settings_s {
      */
     uint32_t max_stream_unsent_packets;
     /**
+     * Opt-in HTTP/3 body consumption flow control. 0 keeps legacy credit
+     * accounting. Nonzero selects a base budget in bytes, clamped to
+     * [63000, 128 MiB], and an aggregate window of twice that. Per-stream
+     * credit defaults to the smaller of this base and 16 MiB.
+     * Unread DATA retains credit until recv_body or request destruction;
+     * headers and critical streams continue to credit transport reads.
+     * Initial transport parameters are bounded too, since previously
+     * advertised credit cannot be withdrawn (RFC 9000 Section 4.2).
+     * Coordinated rebuild required: xqc_conn_settings_t has no ABI size.
+     */
+    uint32_t h3_body_recv_window;
+    /** Optional smaller per-stream cap; 0 retains the default above.
+     * Always capped at 16 MiB. Aggregate credit stays at twice the base. */
+    uint32_t h3_body_stream_recv_window;
+    /** Optional smaller initial stream window. 0 preserves the fixed-cap
+     * behavior above. Nonzero enables consumption/RTT autotuning up to the
+     * stream cap; unread DATA and BLOCKED frames never trigger growth.
+     * Clamped to [63000, stream cap]. Aggregate credit is unchanged. */
+    uint32_t h3_body_stream_initial_window;
+    /**
      * Max buffered out-of-order STREAM frame nodes per stream (reassembly
      * cap, CWE-770 mitigation per RFC 9000 §21.7).
      *
@@ -1930,6 +1950,19 @@ typedef struct xqc_conn_stats_s {
 
     uint32_t fec_recover_pkt_cnt;
     xqc_usec_t avg_close_time;
+
+    /* Connection flow-control snapshot. ABI grows: rebuild consumers
+     * with this pinned header/library pair. Offsets are cumulative;
+     * h3_pending is unread application DATA, not allocator usage. */
+    uint64_t stream_diag_recv_limit;
+    uint64_t stream_diag_recv_used;
+    uint64_t stream_diag_recv_read;
+    uint64_t stream_diag_h3_pending;
+    uint64_t stream_diag_recv_window;
+    uint64_t stream_diag_recv_window_update_us;
+    uint64_t stream_diag_send_limit;
+    uint64_t stream_diag_send_used;
+    uint64_t stream_diag_send_blocked;
 } xqc_conn_stats_t;
 
 typedef struct xqc_conn_qos_stats_s {

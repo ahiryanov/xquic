@@ -10,6 +10,11 @@
 #include "src/http3/xqc_h3_ctx.h"
 #include "src/common/xqc_time.h"
 
+static void xqc_h3_request_release_body_credit(xqc_h3_request_t *h3r,
+    size_t len);
+
+
+
 
 xqc_h3_request_t *
 xqc_h3_request_create(xqc_engine_t *engine, const xqc_cid_t *cid,
@@ -119,8 +124,88 @@ xqc_h3_request_destroy(xqc_h3_request_t *h3_request)
         xqc_h3_headers_free(&h3_request->h3_header[i]);
     }
 
+    xqc_h3_request_release_body_credit(h3_request,
+                                       h3_request->body_buf_size);
     xqc_list_buf_list_free(&h3_request->body_buf);
     xqc_free(h3_request);
+}
+
+/* Coalesce small DATA fragments into bounded blocks. A byte window alone
+ * must not permit one allocation per byte (RFC 9000 Section 21.7). */
+xqc_int_t
+xqc_h3_request_buffer_body(xqc_h3_request_t *h3r,
+    const unsigned char *data, size_t len)
+{
+    xqc_var_buf_t *buf = NULL;
+    xqc_int_t ret;
+    if (!xqc_list_empty(&h3r->body_buf)) {
+        xqc_list_buf_t *tail = xqc_list_entry(h3r->body_buf.prev,
+            xqc_list_buf_t, list_head);
+        if (tail->buf->data_len <= XQC_H3_BODY_BUF_BLOCK_SIZE
+            && len <= XQC_H3_BODY_BUF_BLOCK_SIZE - tail->buf->data_len)
+        {
+            buf = tail->buf;
+        }
+    }
+    if (buf) {
+        ret = xqc_var_buf_save_data(buf, data, len);
+        if (ret != XQC_OK) {
+            return ret;
+        }
+    } else {
+        buf = xqc_var_buf_create(len);
+        if (buf == NULL) {
+            return -XQC_EMALLOC;
+        }
+        ret = xqc_var_buf_save_data(buf, data, len);
+        if (ret == XQC_OK) {
+            ret = xqc_list_buf_to_tail(&h3r->body_buf, buf);
+        }
+        if (ret != XQC_OK) {
+            xqc_var_buf_free(buf);
+            return ret;
+        }
+        h3r->body_buf_count++;
+    }
+    h3r->body_buf_size += len;
+    xqc_connection_t *conn = h3r->h3_stream->h3c->conn;
+    if (conn->conn_settings.h3_body_recv_window) {
+        conn->conn_flow_ctl.fc_h3_body_pending += len;
+        if (h3r->h3_stream->stream) {
+            h3r->h3_stream->stream->fc_h3_body_pending += len;
+        }
+    }
+    return XQC_OK;
+}
+
+static void
+xqc_h3_request_release_body_credit(xqc_h3_request_t *h3r, size_t len)
+{
+    xqc_h3_stream_t *h3s = h3r->h3_stream;
+    xqc_connection_t *conn = h3s->h3c->conn;
+    h3r->body_buf_size -= len;
+    if (!len || !conn->conn_settings.h3_body_recv_window) {
+        return;
+    }
+    conn->conn_flow_ctl.fc_h3_body_pending -= len;
+    if (h3s->stream) {
+        h3s->stream->fc_h3_body_pending -= len;
+    }
+    if (conn->conn_state < XQC_CONN_STATE_CLOSING
+        && !(conn->conn_flag & XQC_CONN_FLAG_CLOSING_NOTIFY))
+    {
+        if (h3s->stream) {
+            xqc_stream_do_recv_flow_ctl(h3s->stream, XQC_TRUE);
+        } else {
+            /* QPACK can keep an H3 request alive after transport close. */
+            xqc_conn_do_recv_flow_ctl(conn, 0, XQC_TRUE);
+        }
+        /* Queue MAX_DATA asynchronously; never reenter an application
+         * callback from recv_body, including a timer-driven resume. */
+        xqc_engine_remove_wakeup_queue(conn->engine, conn);
+        xqc_engine_add_active_queue(conn->engine, conn);
+        xqc_engine_wakeup_once(conn->engine);
+    }
 }
 
 xqc_int_t
@@ -795,6 +880,7 @@ xqc_h3_request_recv_body(xqc_h3_request_t *h3_request, unsigned char *recv_buf,
         h3_request->read_flag &= ~XQC_REQ_NOTIFY_READ_BODY;
     }
 
+    xqc_h3_request_release_body_credit(h3_request, n_recv);
     h3_request->body_recvd += n_recv;
     if (h3_request->body_buf_count == 0) {
         *fin = h3_request->fin_flag;
